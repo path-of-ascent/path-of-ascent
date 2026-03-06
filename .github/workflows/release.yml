@@ -38,26 +38,29 @@ jobs:
           bun build release/server-bundled.js --compile --target=bun-darwin-x64 --outfile=release/path-of-ascent-macos
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: actions/github-script@v7
         with:
-          files: |
-            release/path-of-ascent-windows.exe
-            release/path-of-ascent-linux
-            release/path-of-ascent-macos
-          body: |
-            ## Path of Ascent ${{ github.ref_name }}
+          script: |
+            const fs = require('fs');
+            const tag = context.ref.replace('refs/tags/', '');
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Path of Ascent ${tag}`,
+              body: `## Path of Ascent ${tag}
 
             Your PoB companion — paste a Path of Building export code and get leveling guides, gem links, passive trees, and trade searches.
 
             ### Download
-            - **Windows**: `path-of-ascent-windows.exe`
-            - **Linux**: `path-of-ascent-linux`
-            - **macOS**: `path-of-ascent-macos`
+            - **Windows**: \`path-of-ascent-windows.exe\`
+            - **Linux**: \`path-of-ascent-linux\`
+            - **macOS**: \`path-of-ascent-macos\`
 
             ### Usage
             1. Download the file for your platform
-            2. Run it (Windows: double-click the exe, Linux/Mac: `chmod +x` then run)
-            3. Browser opens to `http://localhost:3333`
+            2. Run it (Windows: double-click the exe, Linux/Mac: \`chmod +x\` then run)
+            3. Browser opens to \`http://localhost:3333\`
             4. Paste your PoB export code
 
             ### Features
@@ -68,4 +71,24 @@ jobs:
             - Trade search (instant buyout, opens in new tab)
             - Rarity-aware searches (unique by name, rare as non-unique, magic as magic)
             - Gem vendor sources by class
-            - Multiple skill set and item set selection
+            - Multiple skill set and item set selection`,
+              draft: false,
+              prerelease: false,
+            });
+
+            const files = [
+              { name: 'path-of-ascent-windows.exe', path: 'release/path-of-ascent-windows.exe' },
+              { name: 'path-of-ascent-linux', path: 'release/path-of-ascent-linux' },
+              { name: 'path-of-ascent-macos', path: 'release/path-of-ascent-macos' },
+            ];
+
+            for (const file of files) {
+              const data = fs.readFileSync(file.path);
+              await github.rest.repos.uploadReleaseAsset({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.data.id,
+                name: file.name,
+                data,
+              });
+            }
