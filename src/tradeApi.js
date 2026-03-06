@@ -154,14 +154,7 @@ export async function buildTradeQuery(item) {
   const [types, lookup] = await Promise.all([loadBaseTypes(), loadStatLookup()]);
 
   const query = {
-    status: { option: 'online' },
-    filters: {
-      trade_filters: {
-        filters: {
-          sale_type: { option: 'buyout' },
-        },
-      },
-    },
+    status: { option: 'securable' },
   };
 
   if (item.rarity === 'Unique') {
@@ -170,11 +163,17 @@ export async function buildTradeQuery(item) {
       query.type = item.baseType;
     }
   } else {
-    // Rare/Normal/Magic: only use base type, never the random name
     if (types.has(item.baseType)) {
       query.type = item.baseType;
     }
-    // Don't set query.term — it would search by the random rare name
+    const rarityFilter = item.rarity === 'Magic' ? 'magic' : 'nonunique';
+    query.filters = {
+      type_filters: {
+        filters: {
+          rarity: { option: rarityFilter },
+        },
+      },
+    };
   }
 
   // Dynamically match all item stats to trade API stat IDs
