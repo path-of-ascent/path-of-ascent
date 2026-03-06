@@ -1,0 +1,71 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Generate bundled server
+        run: node build-release.js
+
+      - name: Compile binaries
+        run: |
+          bun build release/server-bundled.js --compile --target=bun-windows-x64 --outfile=release/path-of-ascent-windows.exe
+          bun build release/server-bundled.js --compile --target=bun-linux-x64 --outfile=release/path-of-ascent-linux
+          bun build release/server-bundled.js --compile --target=bun-darwin-x64 --outfile=release/path-of-ascent-macos
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/path-of-ascent-windows.exe
+            release/path-of-ascent-linux
+            release/path-of-ascent-macos
+          body: |
+            ## Path of Ascent ${{ github.ref_name }}
+
+            Your PoB companion — paste a Path of Building export code and get leveling guides, gem links, passive trees, and trade searches.
+
+            ### Download
+            - **Windows**: `path-of-ascent-windows.exe`
+            - **Linux**: `path-of-ascent-linux`
+            - **macOS**: `path-of-ascent-macos`
+
+            ### Usage
+            1. Download the file for your platform
+            2. Run it (Windows: double-click the exe, Linux/Mac: `chmod +x` then run)
+            3. Browser opens to `http://localhost:3333`
+            4. Paste your PoB export code
+
+            ### Features
+            - Passive tree visualization with diff between specs
+            - Gem link groups with slot names, link counts, and diff vs previous setup
+            - Ascendancy node ordering by lab
+            - Item properties (armour, evasion, ES, pDPS, crit, APS)
+            - Trade search (instant buyout, opens in new tab)
+            - Rarity-aware searches (unique by name, rare as non-unique, magic as magic)
+            - Gem vendor sources by class
+            - Multiple skill set and item set selection
