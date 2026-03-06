@@ -50,5 +50,5 @@ app.get('/{*splat}', (_req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`PoB Trade running at http://localhost:${PORT}`);
+  console.log(`Path of Ascent running at http://localhost:${PORT}`);
 });

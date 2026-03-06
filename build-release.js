@@ -109,7 +109,7 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(\`PoB Trade running at http://localhost:\${PORT}\`);
+  console.log(\`Path of Ascent running at http://localhost:\${PORT}\`);
   // Try to open browser
   const open = process.platform === 'win32' ? 'start' : process.platform === 'darwin' ? 'open' : 'xdg-open';
   import('child_process').then(cp => cp.exec(\`\${open} http://localhost:\${PORT}\`)).catch(() => {});

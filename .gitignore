@@ -25,5 +25,10 @@ dist-ssr
 *.sw?
 
 # Release binaries
-release/pob-trade-*
-release/server-bundled.js
+release/
+pob-trade-*
+path-of-ascent-*
+
+# Private server
+server.js
+vercel.json

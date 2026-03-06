@@ -412,7 +412,7 @@ export default function App() {
             <div className="p-2 bg-blue-600 rounded-xl shadow-lg shadow-blue-900/40">
               <Zap className="text-white fill-white" size={20} />
             </div>
-            <h1 className="text-2xl font-black text-white italic uppercase tracking-tighter">PoB Trade</h1>
+            <h1 className="text-2xl font-black text-white italic uppercase tracking-tighter">Path of Ascent</h1>
           </div>
           <div className="flex items-center gap-2">
             <select
