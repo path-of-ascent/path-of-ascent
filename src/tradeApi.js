@@ -150,13 +150,13 @@ export function getTradeResultUrl(league, searchId) {
   return `${TRADE_SITE}/search/${encodeURIComponent(league)}/${searchId}`;
 }
 
-export function buildGemQuery(league, gemName, level = 20, quality = null, { corrupted = false } = {}) {
+export async function searchGemTrade(league, gemName, level = 20, quality = null, { corrupted = false } = {}) {
   const gemFilters = {
     gem_level: { min: level },
   };
   if (corrupted !== 'any') gemFilters.corrupted = { option: corrupted };
   if (quality) gemFilters.quality = { min: quality };
-  return {
+  const query = {
     query: {
       type: gemName,
       filters: {
@@ -166,16 +166,8 @@ export function buildGemQuery(league, gemName, level = 20, quality = null, { cor
     },
     sort: { price: 'asc' },
   };
-}
-
-// Open gem search via server-hosted redirect page (user's browser does the POST)
-export function openGemTrade(league, gemName, level = 20, quality = null, opts = {}) {
-  const query = buildGemQuery(league, gemName, level, quality, opts);
-  const params = new URLSearchParams({
-    league,
-    query: JSON.stringify(query),
-  });
-  window.open(`/gem-search?${params}`, '_blank');
+  const searchId = await createTradeSearch(league, query);
+  return getTradeResultUrl(league, searchId);
 }
 
 export async function buildTradeQuery(item) {
