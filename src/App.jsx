@@ -122,7 +122,12 @@ function saveHistory(builds) {
 
 export default function App() {
   const [recentBuilds, setRecentBuilds] = useState(() => loadHistory());
-  const [pobCode, setPobCode] = useState('');
+  const [pobCode, setPobCode] = useState(() => {
+    try { return localStorage.getItem('pob-trade-lastcode') || ''; } catch { return ''; }
+  });
+  const [pobbinUrl, setPobbinUrl] = useState(() => {
+    try { return localStorage.getItem('pob-trade-pobbinurl') || ''; } catch { return ''; }
+  });
   const [leagues, setLeagues] = useState(['Standard', 'Hardcore']);
   const [selectedLeague, setSelectedLeague] = useState(() => {
     try { return localStorage.getItem('pob-trade-league') || 'Standard'; } catch { return 'Standard'; }
@@ -180,6 +185,11 @@ export default function App() {
         }
       } catch { /* use defaults */ }
     })();
+    // Auto-load last build on startup
+    const lastCode = localStorage.getItem('pob-trade-lastcode');
+    if (lastCode) {
+      setTimeout(() => processPoB(lastCode), 100);
+    }
   }, []);
 
   async function saveSession() {
@@ -207,12 +217,37 @@ export default function App() {
     }).catch(console.error);
   }
 
-  function processPoB(codeOverride) {
-    const target = codeOverride || pobCode;
+  async function processPoB(codeOverride) {
+    let target = codeOverride || pobCode;
     if (!target) return;
+    target = target.trim();
+
+    // Handle pobb.in URLs — save link, prompt for PoB code
+    const pobbinMatch = target.match(/pobb\.in\/([A-Za-z0-9_-]+)/);
+    if (pobbinMatch) {
+      const url = `https://pobb.in/${pobbinMatch[1]}`;
+      setPobbinUrl(url);
+      try { localStorage.setItem('pob-trade-pobbinurl', url); } catch {}
+      // If we already have a loaded build, just save the link association
+      const lastCode = localStorage.getItem('pob-trade-lastcode');
+      if (lastCode && buildClass) {
+        setPobCode(lastCode);
+        setIsProcessing(false);
+        return;
+      }
+      // No build loaded — open pobb.in so user can copy the PoB export
+      window.open(url, '_blank');
+      setError('pobb.in link saved! Copy the PoB export code from the site and paste it here.');
+      setIsProcessing(false);
+      return;
+    }
+
     setIsProcessing(true);
     setError(null);
     try {
+      // Save last code for reload persistence
+      try { localStorage.setItem('pob-trade-lastcode', target); } catch {}
+
       const base64 = target.trim().replace(/-/g, '+').replace(/_/g, '/');
       const bytes = new Uint8Array(atob(base64).split('').map(c => c.charCodeAt(0)));
       const inflated = pako.inflate(bytes, { to: 'string' });
@@ -362,7 +397,7 @@ export default function App() {
       if (!codeOverride) {
         const skillName = getMainSkill(xmlDoc);
         const updated = [
-          { skillName, pobCode: target, timestamp: Date.now() },
+          { skillName, pobCode: target, pobbinUrl: pobbinUrl || undefined, timestamp: Date.now() },
           ...recentBuilds.filter(b => b.pobCode !== target)
         ].slice(0, 5);
         setRecentBuilds(updated);
@@ -374,6 +409,18 @@ export default function App() {
     } finally {
       setIsProcessing(false);
     }
+  }
+
+  function createPobbin() {
+    const code = localStorage.getItem('pob-trade-lastcode');
+    if (!code) return;
+    navigator.clipboard.writeText(code).then(() => {
+      window.open('https://pobb.in', '_blank');
+      setFeedbackId('pobbin-copied');
+      setTimeout(() => setFeedbackId(null), 3000);
+    }).catch(() => {
+      window.open('https://pobb.in', '_blank');
+    });
   }
 
   async function openTrade(item, itemId) {
@@ -474,16 +521,42 @@ export default function App() {
           <textarea
             value={pobCode}
             onChange={e => setPobCode(e.target.value)}
-            placeholder="Paste PoB export string..."
-            className="w-full h-20 bg-[#0a0b0e] border border-slate-800 rounded-2xl p-4 text-[10px] font-mono text-blue-300 outline-none mb-4 resize-none focus:border-blue-500/50 transition-colors"
+            placeholder="Paste PoB export code or pobb.in link..."
+            className="w-full h-20 bg-[#0a0b0e] border border-slate-800 rounded-2xl p-4 text-[10px] font-mono text-blue-300 outline-none mb-3 resize-none focus:border-blue-500/50 transition-colors"
           />
-          <button
-            onClick={() => processPoB()}
-            disabled={isProcessing}
-            className="w-full bg-blue-600 hover:bg-blue-700 py-4 rounded-2xl font-black text-white transition-all flex justify-center items-center gap-2 active:scale-95 shadow-xl cursor-pointer disabled:opacity-50"
-          >
-            {isProcessing ? <Loader2 className="animate-spin" size={20} /> : "GENERATE TRADE LINKS"}
-          </button>
+          <div className="flex gap-2 mb-3">
+            <button
+              onClick={() => processPoB()}
+              disabled={isProcessing}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 py-4 rounded-2xl font-black text-white transition-all flex justify-center items-center gap-2 active:scale-95 shadow-xl cursor-pointer disabled:opacity-50"
+            >
+              {isProcessing ? <Loader2 className="animate-spin" size={20} /> : "GENERATE TRADE LINKS"}
+            </button>
+            {pobCode && (
+              <button
+                onClick={() => setPobCode('')}
+                className="px-4 py-4 rounded-2xl border border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-600 text-xs font-bold transition-colors cursor-pointer"
+              >CLEAR</button>
+            )}
+          </div>
+          {(pobbinUrl || buildClass) && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {pobbinUrl && (
+                <a href={pobbinUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-purple-400 hover:text-purple-300 font-bold bg-purple-400/10 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-colors">
+                  <LinkIcon size={10} /> {pobbinUrl.replace('https://', '')}
+                </a>
+              )}
+              {!pobbinUrl && buildClass && (
+                <button
+                  onClick={createPobbin}
+                  className="text-[10px] text-purple-400 hover:text-purple-300 font-bold bg-purple-400/10 hover:bg-purple-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <LinkIcon size={10} />
+                  {feedbackId === 'pobbin-copied' ? 'Copied! Paste on pobb.in' : 'Create pobb.in'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {error && (
@@ -499,7 +572,7 @@ export default function App() {
             {recentBuilds.map((b, i) => (
               <button
                 key={i}
-                onClick={() => { setPobCode(b.pobCode); processPoB(b.pobCode); }}
+                onClick={() => { setPobCode(b.pobCode); setPobbinUrl(b.pobbinUrl || ''); processPoB(b.pobCode); }}
                 className="bg-[#1a1c24] border border-slate-800 hover:border-blue-500/50 px-4 py-3 rounded-xl flex items-center gap-3 transition-all group cursor-pointer"
               >
                 <Clock size={12} className="text-blue-500" />
