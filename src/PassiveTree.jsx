@@ -70,7 +70,7 @@ export default function PassiveTree({ specs }) {
   const [selectedSpec, setSelectedSpec] = useState(() => {
     try { return parseInt(localStorage.getItem('pob-trade-tree') || '0') || 0; } catch { return 0; }
   });
-  const [ascendancyNodes, setAscendancyNodes] = useState([]);
+  const [ascendancyLabs, setAscendancyLabs] = useState(null); // { labs: [{label, nodes}], unsorted: [{name,stats}] }
   const [tooltip, setTooltip] = useState(null); // {x, y, node, stats}
   const tooltipTimer = useRef(null);
 
@@ -87,6 +87,57 @@ export default function PassiveTree({ specs }) {
       setSelectedSpec(idx);
     }
   }, [specs]);
+
+  // Compute ascendancy lab assignments by diffing across ALL tree specs
+  useEffect(() => {
+    if (!treeData || !specs || specs.length === 0) { setAscendancyLabs(null); return; }
+    const { nodes: treeNodes } = treeData;
+
+    // Get ascendancy notables from each spec
+    const specNotables = specs.map(spec => {
+      const notables = [];
+      for (const id of spec.nodes) {
+        const node = treeNodes[id];
+        if (node?.ascendancyName && node.isNotable) {
+          notables.push({ id, name: node.name || id, stats: node.sd || [] });
+        }
+      }
+      return notables;
+    });
+
+    // Diff: find when each notable first appears
+    const LAB_NAMES = ['Normal', 'Cruel', 'Merciless', 'Uber'];
+    const seen = new Set();
+    const labs = []; // [{label, nodes}]
+    let labIdx = 0;
+
+    for (let si = 0; si < specs.length; si++) {
+      const newInThisSpec = specNotables[si].filter(n => !seen.has(n.id));
+      if (newInThisSpec.length > 0) {
+        // Each spec that adds new notables = next lab
+        if (labIdx < 4) {
+          labs.push({ label: LAB_NAMES[labIdx], nodes: newInThisSpec });
+          labIdx++;
+        } else {
+          // More than 4 tiers — append to last
+          labs[labs.length - 1].nodes.push(...newInThisSpec);
+        }
+        for (const n of newInThisSpec) seen.add(n.id);
+      }
+    }
+
+    if (labs.length > 0) {
+      setAscendancyLabs({ labs, unsorted: [] });
+    } else {
+      // Single spec — can't determine lab order, show as unsorted
+      const allNotables = specNotables[specNotables.length - 1] || [];
+      if (allNotables.length > 0) {
+        setAscendancyLabs({ labs: [], unsorted: allNotables });
+      } else {
+        setAscendancyLabs(null);
+      }
+    }
+  }, [treeData, specs]);
 
   const showTooltip = useCallback((x, y, node) => {
     if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
@@ -158,64 +209,6 @@ export default function PassiveTree({ specs }) {
     const currentNodes = specs[selectedSpec]?.nodes || new Set();
     const prevNodes = selectedSpec > 0 ? (specs[selectedSpec - 1]?.nodes || new Set()) : null;
     const allAllocated = new Set([...currentNodes, ...(prevNodes || [])]);
-
-    // Compute ordered ascendancy nodes — build adjacency, BFS with angle-sorted edges
-    const allocAsc = [...currentNodes].filter(id => treeNodes[id]?.ascendancyName && !treeNodes[id]?.isAscendancyStart);
-    if (allocAsc.length > 0) {
-      const ascName = treeNodes[allocAsc[0]]?.ascendancyName;
-      const startId = Object.keys(treeNodes).find(id => treeNodes[id]?.isAscendancyStart && treeNodes[id]?.ascendancyName === ascName);
-      if (startId) {
-        // Build bidirectional adjacency for this ascendancy only
-        const ascIds = Object.keys(treeNodes).filter(id => treeNodes[id]?.ascendancyName === ascName);
-        const adj = {};
-        for (const id of ascIds) adj[id] = new Set();
-        for (const id of ascIds) {
-          for (const outId of (treeNodes[id]?.out || [])) {
-            if (treeNodes[outId]?.ascendancyName === ascName) {
-              adj[id]?.add(String(outId));
-              adj[String(outId)]?.add(id);
-            }
-          }
-        }
-        // BFS from start, sorting neighbors by angle from start for consistent clockwise order
-        const startPos = positions[startId];
-        const ordered = [];
-        const visited = new Set();
-        const queue = [startId];
-        visited.add(startId);
-        while (queue.length > 0) {
-          const cur = queue.shift();
-          if (cur !== startId && allocAsc.includes(cur)) {
-            ordered.push({ id: cur, name: treeNodes[cur]?.name || cur, stats: treeNodes[cur]?.sd || [] });
-          }
-          const neighbors = [...(adj[cur] || [])].filter(n => !visited.has(n));
-          // Sort by angle from start node for consistent ordering
-          if (startPos) {
-            neighbors.sort((a, b) => {
-              const pa = positions[a], pb = positions[b];
-              if (!pa || !pb) return 0;
-              const angA = Math.atan2(pa.y - startPos.y, pa.x - startPos.x);
-              const angB = Math.atan2(pb.y - startPos.y, pb.x - startPos.x);
-              return angA - angB;
-            });
-          }
-          for (const nid of neighbors) {
-            visited.add(nid);
-            queue.push(nid);
-          }
-        }
-        for (const id of allocAsc) {
-          if (!ordered.find(n => n.id === id)) {
-            ordered.push({ id, name: treeNodes[id]?.name || id, stats: treeNodes[id]?.sd || [] });
-          }
-        }
-        setAscendancyNodes(ordered);
-      } else {
-        setAscendancyNodes(allocAsc.map(id => ({ id, name: treeNodes[id]?.name || id, stats: treeNodes[id]?.sd || [] })));
-      }
-    } else {
-      setAscendancyNodes([]);
-    }
 
     if (currentNodes.size === 0) {
       ctx.fillStyle = '#0a0b0e';
@@ -477,8 +470,6 @@ export default function PassiveTree({ specs }) {
     </div>
   );
 
-  const LAB_NAMES = ['Normal', 'Cruel', 'Merciless', 'Uber'];
-
   return (
     <div className="bg-[#12141c] border border-slate-800 rounded-2xl overflow-hidden shadow-lg mb-6">
       <div className="px-5 py-3 flex items-center justify-between border-b border-slate-800/50">
@@ -549,40 +540,60 @@ export default function PassiveTree({ specs }) {
           </div>
         )}
       </div>
-      {ascendancyNodes.length > 0 && (
+      {ascendancyLabs && (ascendancyLabs.labs.length > 0 || ascendancyLabs.unsorted.length > 0) && (
         <div className="px-5 py-3 border-t border-slate-800/50 bg-[#0d0e12]">
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest shrink-0">Ascendancy</span>
-            {[0, 1, 2, 3].map(lab => {
-              const pair = ascendancyNodes.slice(lab * 2, lab * 2 + 2);
-              if (pair.length === 0) return null;
-              return (
-                <div key={lab} className="group relative flex items-center gap-1.5">
-                  <span className="text-[8px] font-bold text-slate-600 uppercase">{LAB_NAMES[lab]}:</span>
-                  {pair.map((n, i) => (
-                    <span key={i} className="relative">
-                      <span className="text-[10px] text-amber-300/90 font-semibold cursor-default hover:text-amber-200 transition-colors border-b border-dashed border-amber-300/20 hover:border-amber-300/60">
-                        {n.name}
-                      </span>
-                      {n.stats.length > 0 && (
-                        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block hover:block z-20 pointer-events-none">
-                          <span className="bg-[#1a1c28] border border-slate-700 rounded-lg px-3 py-2 shadow-xl block max-w-[240px] min-w-[160px]">
-                            <span className="text-[10px] font-black text-amber-300 block mb-1">{n.name}</span>
-                            {n.stats.map((s, si) => (
-                              <span key={si} className="text-[9px] text-blue-300/80 leading-tight block">{s}</span>
-                            ))}
-                          </span>
+          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-2">Ascendancy</span>
+          {ascendancyLabs.labs.length > 0 ? (
+            <div className="space-y-1.5">
+              {ascendancyLabs.labs.map((lab, li) => (
+                <div key={li} className="flex items-start gap-2">
+                  <span className="text-[8px] font-bold text-slate-600 uppercase w-16 shrink-0 pt-0.5">{lab.label}</span>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    {lab.nodes.map((n, ni) => (
+                      <span key={ni} className="group/asc relative">
+                        <span className="text-[10px] text-amber-300/90 font-semibold cursor-default hover:text-amber-200 transition-colors border-b border-dashed border-amber-300/20 hover:border-amber-300/60">
+                          {n.name}
                         </span>
-                      )}
-                    </span>
-                  ))}
-                  {lab < 3 && ascendancyNodes.length > (lab + 1) * 2 && (
-                    <span className="text-slate-700 mx-0.5">|</span>
-                  )}
+                        {n.stats.length > 0 && (
+                          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/asc:block z-20 pointer-events-none">
+                            <span className="bg-[#1a1c28] border border-slate-700 rounded-lg px-3 py-2 shadow-xl block max-w-[240px] min-w-[160px]">
+                              <span className="text-[10px] font-black text-amber-300 block mb-1">{n.name}</span>
+                              {n.stats.map((s, si) => (
+                                <span key={si} className="text-[9px] text-blue-300/80 leading-tight block">{s}</span>
+                              ))}
+                            </span>
+                          </span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div>
+              <span className="text-[8px] text-slate-600 italic block mb-1">Unsure of lab order</span>
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {ascendancyLabs.unsorted.map((n, ni) => (
+                  <span key={ni} className="group/asc relative">
+                    <span className="text-[10px] text-amber-300/90 font-semibold cursor-default hover:text-amber-200 transition-colors border-b border-dashed border-amber-300/20 hover:border-amber-300/60">
+                      {n.name}
+                    </span>
+                    {n.stats.length > 0 && (
+                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/asc:block z-20 pointer-events-none">
+                        <span className="bg-[#1a1c28] border border-slate-700 rounded-lg px-3 py-2 shadow-xl block max-w-[240px] min-w-[160px]">
+                          <span className="text-[10px] font-black text-amber-300 block mb-1">{n.name}</span>
+                          {n.stats.map((s, si) => (
+                            <span key={si} className="text-[9px] text-blue-300/80 leading-tight block">{s}</span>
+                          ))}
+                        </span>
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
