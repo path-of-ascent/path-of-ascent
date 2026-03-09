@@ -5,20 +5,20 @@ import {
   ChevronDown, ChevronUp, Shield, Gem, FlaskConical,
   Diamond, Clock, LinkIcon, AlertTriangle, Settings
 } from 'lucide-react';
-import { createTradeSearch, getTradeResultUrl, buildTradeQuery } from './tradeApi';
+import { createTradeSearch, getTradeResultUrl, buildTradeQuery, searchGemTrade } from './tradeApi';
 import { getGemSource } from './gemVendors';
 import PassiveTree, { decodeTreeUrl } from './PassiveTree';
 
 
 const CLASS_NAMES = ['Scion', 'Marauder', 'Ranger', 'Witch', 'Duelist', 'Templar', 'Shadow'];
 const ASCENDANCY_NAMES = {
-  0: [null, 'Ascendant'],
-  1: [null, 'Juggernaut', 'Berserker', 'Chieftain'],
-  2: [null, 'Raider', 'Deadeye', 'Pathfinder'],
-  3: [null, 'Necromancer', 'Elementalist', 'Occultist'],
-  4: [null, 'Slayer', 'Gladiator', 'Champion'],
-  5: [null, 'Inquisitor', 'Hierophant', 'Guardian'],
-  6: [null, 'Assassin', 'Saboteur', 'Trickster'],
+  0: ['Ascendant'],                              // Scion
+  1: ['Juggernaut', 'Berserker', 'Chieftain'],   // Marauder
+  2: ['Deadeye', 'Raider', 'Pathfinder'],         // Ranger
+  3: ['Elementalist', 'Necromancer', 'Occultist'], // Witch
+  4: ['Slayer', 'Gladiator', 'Champion'],         // Duelist
+  5: ['Inquisitor', 'Hierophant', 'Guardian'],   // Templar
+  6: ['Assassin', 'Saboteur', 'Trickster'],       // Shadow
 };
 
 function getBuildInfo(xmlDoc) {
@@ -575,10 +575,14 @@ export default function App() {
                             <div className="flex-1 space-y-0.5">
                               {group.gems.map((gem, si) => (
                                 <div key={si} className="flex items-center justify-between">
-                                  <span className={`${gem.isSupport ? 'text-[10px]' : 'text-[11px] font-black'} ${isNew(gem.name) ? 'text-green-400' : (colorMap[gem.color] || (gem.isSupport ? 'text-slate-400' : 'text-slate-200'))}`}>
-                                    {isNew(gem.name) && <span className="text-[8px] mr-1">+</span>}
-                                    {gem.isSupport ? gem.name.replace(' Support', '') : gem.name}
-                                  </span>
+                                  <div className="flex items-center gap-1">
+                                    <span className={`${gem.isSupport ? 'text-[10px]' : 'text-[11px] font-black'} ${isNew(gem.name) ? 'text-green-400' : (colorMap[gem.color] || (gem.isSupport ? 'text-slate-400' : 'text-slate-200'))}`}>
+                                      {isNew(gem.name) && <span className="text-[8px] mr-1">+</span>}
+                                      {gem.isSupport ? gem.name.replace(' Support', '') : gem.name}
+                                    </span>
+                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-emerald-400 hover:text-emerald-300 font-bold ml-1 px-1 rounded bg-emerald-400/10 hover:bg-emerald-400/20" title={`Buy ${gem.name} level 20`}>L20</button>
+                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-blue-400 hover:text-blue-300 font-bold px-1 rounded bg-blue-400/10 hover:bg-blue-400/20" title={`Buy ${gem.name} level 20 quality 20`}>20/20</button>
+                                  </div>
                                   <span className={`text-[8px] font-bold ${gem.isSupport ? 'text-amber-400/40' : 'text-amber-400/60'}`}>{gem.source}</span>
                                 </div>
                               ))}
@@ -588,10 +592,14 @@ export default function App() {
                           /* Unlinked: just list all gems */
                           actives.map((gem, si) => (
                             <div key={si} className="flex items-center justify-between">
-                              <span className={`text-[11px] font-black ${isNew(gem.name) ? 'text-green-400' : (colorMap[gem.color] || 'text-slate-200')}`}>
-                                {isNew(gem.name) && <span className="text-[8px] mr-1">+</span>}
-                                {gem.name}
-                              </span>
+                              <div className="flex items-center gap-1">
+                                <span className={`text-[11px] font-black ${isNew(gem.name) ? 'text-green-400' : (colorMap[gem.color] || 'text-slate-200')}`}>
+                                  {isNew(gem.name) && <span className="text-[8px] mr-1">+</span>}
+                                  {gem.name}
+                                </span>
+                                <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-emerald-400 hover:text-emerald-300 font-bold ml-1 px-1 rounded bg-emerald-400/10 hover:bg-emerald-400/20" title={`Buy ${gem.name} level 20`}>L20</button>
+                                <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-blue-400 hover:text-blue-300 font-bold px-1 rounded bg-blue-400/10 hover:bg-blue-400/20" title={`Buy ${gem.name} level 20 quality 20`}>20/20</button>
+                              </div>
                               <span className="text-[8px] text-amber-400/60 font-bold">{gem.source}</span>
                             </div>
                           ))

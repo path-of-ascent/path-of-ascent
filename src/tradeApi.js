@@ -150,6 +150,26 @@ export function getTradeResultUrl(league, searchId) {
   return `${TRADE_SITE}/search/${encodeURIComponent(league)}/${searchId}`;
 }
 
+export async function searchGemTrade(league, gemName, level = 20, quality = null) {
+  const gemFilters = {
+    gem_level: { min: level },
+    corrupted: { option: false },
+  };
+  if (quality) gemFilters.quality = { min: quality };
+  const query = {
+    query: {
+      type: gemName,
+      filters: {
+        misc_filters: { filters: gemFilters },
+      },
+      status: { option: 'securable' },
+    },
+    sort: { price: 'asc' },
+  };
+  const searchId = await createTradeSearch(league, query);
+  return getTradeResultUrl(league, searchId);
+}
+
 export async function buildTradeQuery(item) {
   const [types, lookup] = await Promise.all([loadBaseTypes(), loadStatLookup()]);
 
