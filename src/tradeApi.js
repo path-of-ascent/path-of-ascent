@@ -150,13 +150,13 @@ export function getTradeResultUrl(league, searchId) {
   return `${TRADE_SITE}/search/${encodeURIComponent(league)}/${searchId}`;
 }
 
-export function searchGemTrade(league, gemName, level = 20, quality = null, { corrupted = false } = {}) {
+export function buildGemQuery(league, gemName, level = 20, quality = null, { corrupted = false } = {}) {
   const gemFilters = {
     gem_level: { min: level },
   };
   if (corrupted !== 'any') gemFilters.corrupted = { option: corrupted };
   if (quality) gemFilters.quality = { min: quality };
-  const query = {
+  return {
     query: {
       type: gemName,
       filters: {
@@ -166,9 +166,28 @@ export function searchGemTrade(league, gemName, level = 20, quality = null, { co
     },
     sort: { price: 'asc' },
   };
-  // Encode query in URL — opens trade site directly, bypasses API rate limits
-  const encoded = btoa(JSON.stringify(query));
-  return `${TRADE_SITE}/search/${encodeURIComponent(league)}?q=${encoded}`;
+}
+
+// Open a new tab that POSTs to the trade API from the user's browser,
+// then redirects to the results page. Bypasses server IP rate limits.
+export function openGemTrade(league, gemName, level = 20, quality = null, opts = {}) {
+  const query = buildGemQuery(league, gemName, level, quality, opts);
+  const url = `https://www.pathofexile.com/api/trade/search/${encodeURIComponent(league)}`;
+  const html = `<!DOCTYPE html><html><body><p>Searching for ${gemName}...</p><script>
+fetch(${JSON.stringify(url)}, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: ${JSON.stringify(JSON.stringify(query))}
+}).then(r => r.json()).then(data => {
+  if (data.id) {
+    location.href = 'https://www.pathofexile.com/trade/search/${encodeURIComponent(league)}/' + data.id;
+  } else {
+    document.body.innerText = 'Trade error: ' + JSON.stringify(data);
+  }
+}).catch(e => { document.body.innerText = 'Error: ' + e.message; });
+</script></body></html>`;
+  const blob = new Blob([html], { type: 'text/html' });
+  window.open(URL.createObjectURL(blob), '_blank');
 }
 
 export async function buildTradeQuery(item) {
