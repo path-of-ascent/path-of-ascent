@@ -150,7 +150,7 @@ export function getTradeResultUrl(league, searchId) {
   return `${TRADE_SITE}/search/${encodeURIComponent(league)}/${searchId}`;
 }
 
-export async function searchGemTrade(league, gemName, level = 20, quality = null, { corrupted = false } = {}) {
+export function searchGemTrade(league, gemName, level = 20, quality = null, { corrupted = false } = {}) {
   const gemFilters = {
     gem_level: { min: level },
   };
@@ -166,8 +166,9 @@ export async function searchGemTrade(league, gemName, level = 20, quality = null
     },
     sort: { price: 'asc' },
   };
-  const searchId = await createTradeSearch(league, query);
-  return getTradeResultUrl(league, searchId);
+  // Encode query in URL — opens trade site directly, bypasses API rate limits
+  const encoded = btoa(JSON.stringify(query));
+  return `${TRADE_SITE}/search/${encodeURIComponent(league)}?q=${encoded}`;
 }
 
 export async function buildTradeQuery(item) {
