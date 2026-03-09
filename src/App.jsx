@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import pako from 'pako';
 import {
   Zap, ExternalLink, Copy, Check, Search, Loader2,
@@ -185,11 +185,15 @@ export default function App() {
         }
       } catch { /* use defaults */ }
     })();
-    // Auto-load last build on startup
+  }, []);
+
+  // Auto-load last build on startup
+  const autoLoadedRef = useRef(false);
+  useEffect(() => {
+    if (autoLoadedRef.current) return;
+    autoLoadedRef.current = true;
     const lastCode = localStorage.getItem('pob-trade-lastcode');
-    if (lastCode) {
-      setTimeout(() => processPoB(lastCode), 100);
-    }
+    if (lastCode) processPoB(lastCode);
   }, []);
 
   async function saveSession() {
