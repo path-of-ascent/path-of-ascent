@@ -159,12 +159,26 @@ export default function PassiveTree({ specs }) {
     const prevNodes = selectedSpec > 0 ? (specs[selectedSpec - 1]?.nodes || new Set()) : null;
     const allAllocated = new Set([...currentNodes, ...(prevNodes || [])]);
 
-    // Compute ordered ascendancy nodes via BFS from ascendancy start
+    // Compute ordered ascendancy nodes — build adjacency, BFS with angle-sorted edges
     const allocAsc = [...currentNodes].filter(id => treeNodes[id]?.ascendancyName && !treeNodes[id]?.isAscendancyStart);
     if (allocAsc.length > 0) {
       const ascName = treeNodes[allocAsc[0]]?.ascendancyName;
       const startId = Object.keys(treeNodes).find(id => treeNodes[id]?.isAscendancyStart && treeNodes[id]?.ascendancyName === ascName);
       if (startId) {
+        // Build bidirectional adjacency for this ascendancy only
+        const ascIds = Object.keys(treeNodes).filter(id => treeNodes[id]?.ascendancyName === ascName);
+        const adj = {};
+        for (const id of ascIds) adj[id] = new Set();
+        for (const id of ascIds) {
+          for (const outId of (treeNodes[id]?.out || [])) {
+            if (treeNodes[outId]?.ascendancyName === ascName) {
+              adj[id]?.add(String(outId));
+              adj[String(outId)]?.add(id);
+            }
+          }
+        }
+        // BFS from start, sorting neighbors by angle from start for consistent clockwise order
+        const startPos = positions[startId];
         const ordered = [];
         const visited = new Set();
         const queue = [startId];
@@ -174,17 +188,20 @@ export default function PassiveTree({ specs }) {
           if (cur !== startId && allocAsc.includes(cur)) {
             ordered.push({ id: cur, name: treeNodes[cur]?.name || cur, stats: treeNodes[cur]?.sd || [] });
           }
-          for (const outId of (treeNodes[cur]?.out || [])) {
-            if (!visited.has(outId) && treeNodes[outId]?.ascendancyName === ascName) {
-              visited.add(outId);
-              queue.push(outId);
-            }
+          const neighbors = [...(adj[cur] || [])].filter(n => !visited.has(n));
+          // Sort by angle from start node for consistent ordering
+          if (startPos) {
+            neighbors.sort((a, b) => {
+              const pa = positions[a], pb = positions[b];
+              if (!pa || !pb) return 0;
+              const angA = Math.atan2(pa.y - startPos.y, pa.x - startPos.x);
+              const angB = Math.atan2(pb.y - startPos.y, pb.x - startPos.x);
+              return angA - angB;
+            });
           }
-          for (const [nid, n] of Object.entries(treeNodes)) {
-            if (!visited.has(nid) && n?.ascendancyName === ascName && (n.out || []).some(o => String(o) === String(cur))) {
-              visited.add(nid);
-              queue.push(nid);
-            }
+          for (const nid of neighbors) {
+            visited.add(nid);
+            queue.push(nid);
           }
         }
         for (const id of allocAsc) {

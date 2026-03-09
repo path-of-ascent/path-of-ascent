@@ -150,6 +150,7 @@ export default function App() {
   const [hasSession, setHasSession] = useState(false);
   const [cfReady, setCfReady] = useState(false);
   const [sessionInput, setSessionInput] = useState('');
+  const [excludedMods, setExcludedMods] = useState({}); // { itemId: Set<modIndex> }
 
   useEffect(() => {
     (async () => {
@@ -383,7 +384,11 @@ export default function App() {
     }
     setSearchingItems(prev => ({ ...prev, [itemId]: true }));
     try {
-      const payload = await buildTradeQuery(item);
+      const excluded = excludedMods[itemId] || new Set();
+      const filteredItem = excluded.size > 0
+        ? { ...item, stats: item.stats.filter((_, i) => !excluded.has(i)) }
+        : item;
+      const payload = await buildTradeQuery(filteredItem);
       const searchId = await createTradeSearch(selectedLeague, payload);
       const url = getTradeResultUrl(selectedLeague, searchId);
       window.open(url, '_blank');
@@ -698,13 +703,24 @@ export default function App() {
                                     {item.properties['Attacks per Second'] && <span className="text-[9px] text-slate-400"><span className="text-slate-600">APS </span><span className="text-white font-bold">{item.properties['Attacks per Second']}</span></span>}
                                   </div>
                                 )}
-                                <div className="space-y-1.5 mb-3 min-h-[60px]">
-                                  {item.stats.slice(0, 5).map((s, i) => (
-                                    <div key={i} className="text-[10px] text-slate-400 flex gap-2">
-                                      <span className="text-blue-500 font-bold opacity-30">/</span>
-                                      <span className="truncate">{s}</span>
-                                    </div>
-                                  ))}
+                                <div className="space-y-1 mb-3 min-h-[60px]">
+                                  {item.stats.slice(0, 8).map((s, i) => {
+                                    const isExcluded = excludedMods[itemId]?.has(i);
+                                    return (
+                                      <div key={i} className="text-[10px] text-slate-400 flex items-center gap-1.5 group/mod">
+                                        <button
+                                          onClick={() => setExcludedMods(prev => {
+                                            const set = new Set(prev[itemId] || []);
+                                            if (set.has(i)) set.delete(i); else set.add(i);
+                                            return { ...prev, [itemId]: set };
+                                          })}
+                                          className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 text-[8px] font-black transition-colors cursor-pointer ${isExcluded ? 'border-red-500/60 bg-red-500/10 text-red-400' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'}`}
+                                          title={isExcluded ? 'Excluded from search' : 'Included in search'}
+                                        >{isExcluded ? '✕' : '✓'}</button>
+                                        <span className={`truncate ${isExcluded ? 'line-through opacity-40' : ''}`}>{s}</span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
                               <button
