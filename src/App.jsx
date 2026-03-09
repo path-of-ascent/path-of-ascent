@@ -580,8 +580,10 @@ export default function App() {
                                       {isNew(gem.name) && <span className="text-[8px] mr-1">+</span>}
                                       {gem.isSupport ? gem.name.replace(' Support', '') : gem.name}
                                     </span>
-                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-emerald-400 hover:text-emerald-300 font-bold ml-1 px-1 rounded bg-emerald-400/10 hover:bg-emerald-400/20" title={`Buy ${gem.name} level 20`}>L20</button>
-                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-blue-400 hover:text-blue-300 font-bold px-1 rounded bg-blue-400/10 hover:bg-blue-400/20" title={`Buy ${gem.name} level 20 quality 20`}>20/20</button>
+                                    <span className="text-[7px] text-slate-500 ml-1">⚑</span>
+                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, gem.level, gem.quality || null); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-purple-400 hover:text-purple-300 font-bold px-1 rounded bg-purple-400/10 hover:bg-purple-400/20" title={`Buy ${gem.name} L${gem.level}${gem.quality ? '/Q' + gem.quality : ''} (as in guide)`}>{gem.level}/{gem.quality || 0}</button>
+                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-emerald-400 hover:text-emerald-300 font-bold px-1 rounded bg-emerald-400/10 hover:bg-emerald-400/20" title={`Buy ${gem.name} level 20`}>L20</button>
+                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20, 20, { corrupted: 'any' }); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-blue-400 hover:text-blue-300 font-bold px-1 rounded bg-blue-400/10 hover:bg-blue-400/20 border border-red-500/50" title={`Buy ${gem.name} level 20 quality 20 (any corrupt)`}>20/20</button>
                                   </div>
                                   <span className={`text-[8px] font-bold ${gem.isSupport ? 'text-amber-400/40' : 'text-amber-400/60'}`}>{gem.source}</span>
                                 </div>
@@ -597,8 +599,10 @@ export default function App() {
                                   {isNew(gem.name) && <span className="text-[8px] mr-1">+</span>}
                                   {gem.name}
                                 </span>
+                                <span className="text-[7px] text-slate-500 ml-1">⚑</span>
+                                <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, gem.level, gem.quality || null); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-purple-400 hover:text-purple-300 font-bold px-1 rounded bg-purple-400/10 hover:bg-purple-400/20" title={`Buy ${gem.name} L${gem.level}${gem.quality ? '/Q' + gem.quality : ''} (as in guide)`}>{gem.level}/{gem.quality || 0}</button>
                                 <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-emerald-400 hover:text-emerald-300 font-bold ml-1 px-1 rounded bg-emerald-400/10 hover:bg-emerald-400/20" title={`Buy ${gem.name} level 20`}>L20</button>
-                                <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-blue-400 hover:text-blue-300 font-bold px-1 rounded bg-blue-400/10 hover:bg-blue-400/20" title={`Buy ${gem.name} level 20 quality 20`}>20/20</button>
+                                <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20, 20, { corrupted: 'any' }); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-blue-400 hover:text-blue-300 font-bold px-1 rounded bg-blue-400/10 hover:bg-blue-400/20 border border-red-500/50" title={`Buy ${gem.name} level 20 quality 20 (any corrupt)`}>20/20</button>
                               </div>
                               <span className="text-[8px] text-amber-400/60 font-bold">{gem.source}</span>
                             </div>

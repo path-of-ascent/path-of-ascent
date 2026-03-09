@@ -150,11 +150,11 @@ export function getTradeResultUrl(league, searchId) {
   return `${TRADE_SITE}/search/${encodeURIComponent(league)}/${searchId}`;
 }
 
-export async function searchGemTrade(league, gemName, level = 20, quality = null) {
+export async function searchGemTrade(league, gemName, level = 20, quality = null, { corrupted = false } = {}) {
   const gemFilters = {
     gem_level: { min: level },
-    corrupted: { option: false },
   };
+  if (corrupted !== 'any') gemFilters.corrupted = { option: corrupted };
   if (quality) gemFilters.quality = { min: quality };
   const query = {
     query: {
