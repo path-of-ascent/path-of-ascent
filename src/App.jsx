@@ -398,6 +398,13 @@ export default function App() {
       }
       setTreeSpecs(parsedTreeSpecs);
 
+      // Save full build to server for diagnostics
+      fetch('/api/save-pob', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pobCode: target }),
+      }).catch(() => {});
+
       if (!codeOverride) {
         const skillName = getMainSkill(xmlDoc);
         const updated = [
