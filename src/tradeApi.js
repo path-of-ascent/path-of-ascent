@@ -168,26 +168,14 @@ export function buildGemQuery(league, gemName, level = 20, quality = null, { cor
   };
 }
 
-// Open a new tab that POSTs to the trade API from the user's browser,
-// then redirects to the results page. Bypasses server IP rate limits.
+// Open gem search via server-hosted redirect page (user's browser does the POST)
 export function openGemTrade(league, gemName, level = 20, quality = null, opts = {}) {
   const query = buildGemQuery(league, gemName, level, quality, opts);
-  const url = `https://www.pathofexile.com/api/trade/search/${encodeURIComponent(league)}`;
-  const html = `<!DOCTYPE html><html><body><p>Searching for ${gemName}...</p><script>
-fetch(${JSON.stringify(url)}, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: ${JSON.stringify(JSON.stringify(query))}
-}).then(r => r.json()).then(data => {
-  if (data.id) {
-    location.href = 'https://www.pathofexile.com/trade/search/${encodeURIComponent(league)}/' + data.id;
-  } else {
-    document.body.innerText = 'Trade error: ' + JSON.stringify(data);
-  }
-}).catch(e => { document.body.innerText = 'Error: ' + e.message; });
-</script></body></html>`;
-  const blob = new Blob([html], { type: 'text/html' });
-  window.open(URL.createObjectURL(blob), '_blank');
+  const params = new URLSearchParams({
+    league,
+    query: JSON.stringify(query),
+  });
+  window.open(`/gem-search?${params}`, '_blank');
 }
 
 export async function buildTradeQuery(item) {
