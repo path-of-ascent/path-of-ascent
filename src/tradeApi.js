@@ -150,11 +150,19 @@ function generatePlaceholderCombinations(line) {
 }
 
 /**
- * Detect modifier type from PoB mod line suffixes.
- * PoB appends (implicit), (crafted), (enchant), (fractured) to mod lines.
+ * Detect modifier type from PoB mod line tags/suffixes.
+ * PoB uses {exarch}, {eater}, {crafted} tag prefixes and/or
+ * (implicit), (crafted), (enchant), (fractured) suffixes.
  */
 function detectModType(line) {
+  // Tag-based detection (PoB Community Fork format)
+  if (/\{exarch\}/i.test(line)) return 'implicit';
+  if (/\{eater\}/i.test(line)) return 'implicit';
+  if (/\{crafted\}/i.test(line)) return 'crafted';
+  // Suffix-based detection (legacy/export format)
   if (/ \(implicit\)$/i.test(line)) return 'implicit';
+  if (/ \(Searing Exarch\)$/i.test(line)) return 'implicit';
+  if (/ \(Eater of Worlds\)$/i.test(line)) return 'implicit';
   if (/ \(crafted\)$/i.test(line)) return 'crafted';
   if (/ \(enchant\)$/i.test(line)) return 'enchant';
   if (/ \(fractured\)$/i.test(line)) return 'fractured';
@@ -167,7 +175,8 @@ function detectModType(line) {
  */
 function matchModToStat(line, lookup) {
   const modType = detectModType(line);
-  const cleanLine = line.replace(/ \(enchant\)| \(implicit\)| \(crafted\)| \(fractured\)/gi, '').trim();
+  // Strip both {tag} prefixes and (suffix) annotations
+  const cleanLine = line.replace(/\{[^}]*\}/g, '').replace(/ \(enchant\)| \(implicit\)| \(crafted\)| \(fractured\)| \(Searing Exarch\)| \(Eater of Worlds\)/gi, '').trim();
 
   // Extract all numbers for value calculation
   const allNumbers = cleanLine.match(/-?\d+(\.\d+)?/g);

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import pako from 'pako';
+import pako from 'pako'; // v2 - build 20260310
 import {
   Zap, ExternalLink, Copy, Check, Search, Loader2,
   ChevronDown, ChevronUp, Shield, Gem, FlaskConical,
@@ -165,6 +165,7 @@ export default function App() {
   const [accountName, setAccountName] = useState(null);
   const [loginPending, setLoginPending] = useState(false);
   const [excludedMods, setExcludedMods] = useState({}); // { itemId: Set<modIndex> }
+  const [debugItem, setDebugItem] = useState(null); // itemId to show debug for
   const [leagueStartOpen, setLeagueStartOpen] = useState(false);
 
   // Electron login-state listener
@@ -291,7 +292,7 @@ export default function App() {
         // Unique/Rare: line1 = item name, line2 = base type
         // Normal/Magic: line1 = base type (no separate name)
         // Skip metadata lines like "Unique ID:", "Item Level:", etc.
-        const isMetadata = (l) => /^(Unique ID|Item Level|Quality|Sockets|LevelReq|Implicits|Variant|Selected Variant|Has Alt Variant|Has Alt Variant Two|League|Source|Crafted|Prefix|Suffix|Talisman Tier|Elder Item|Shaper Item|Fractured Item|Synthesised Item|Radius|Limited to|Cluster Jewel):/.test(l) || /^[0-9a-f]{32,}$/i.test(l);
+        const isMetadata = (l) => /^(Unique ID|Item Level|Quality|Sockets|LevelReq|Implicits|Variant|Selected Variant|Has Alt Variant|Has Alt Variant Two|League|Source|Crafted|Prefix|Suffix|Talisman Tier|Elder Item|Shaper Item|Fractured Item|Synthesised Item|Searing Exarch Item|Eater of Worlds Item|Radius|Limited to|Cluster Jewel):/.test(l) || /^[0-9a-f]{32,}$/i.test(l);
 
         let name, baseType;
         if (['Unique', 'Rare'].includes(rarity)) {
@@ -332,14 +333,39 @@ export default function App() {
           }
         }
 
-        const stats = [];
+        const stats = []; // { line, modTag } — modTag: 'exarch'|'eater'|'crafted'|null
         const propLines = /^(Armour|Evasion Rating|Evasion|Energy Shield|Physical Damage|Elemental Damage|Critical Strike Chance|Attacks per Second|Weapon Range|Chance to Block|Block):\s/;
+        const bareMetadata = /^(Elder Item|Shaper Item|Fractured Item|Synthesised Item|Searing Exarch Item|Eater of Worlds Item|Corrupted)$/i;
         lines.forEach((line, idx) => {
-          if (idx < 3 || line.includes('{') || line.startsWith('---') || line.length < 3) return;
+          if (idx < 3 || line.startsWith('---') || line.length < 3) return;
+          if (line.startsWith('<ModRange')) return;
           if (isMetadata(line)) return;
+          if (bareMetadata.test(line)) return;
           if (propLines.test(line)) return;
-          if (line.includes(':') && !['Resistance', 'Life', 'Mana', 'Energy Shield', 'Strength', 'Dexterity', 'Intelligence'].some(s => line.includes(s))) return;
-          stats.push(line);
+          // Parse PoB tag prefixes: {tags:...}{exarch}{range:0.5}Mod text
+          let modTag = null;
+          let cleanLine = line;
+          if (line.includes('{')) {
+            // Extract mod type from tags
+            if (/\{exarch\}/i.test(line)) modTag = 'exarch';
+            else if (/\{eater\}/i.test(line)) modTag = 'eater';
+            else if (/\{crafted\}/i.test(line)) modTag = 'crafted';
+            // Strip all {tag} prefixes
+            cleanLine = line.replace(/\{[^}]*\}/g, '').trim();
+            if (!cleanLine || cleanLine.length < 3) return;
+            // Skip internal PoB lines (Prefix:, Suffix:, etc.)
+            if (/^(Prefix|Suffix|None)/.test(cleanLine)) return;
+          }
+          if (cleanLine.includes(':') && !['Resistance', 'Life', 'Mana', 'Energy Shield', 'Strength', 'Dexterity', 'Intelligence'].some(s => cleanLine.includes(s))) return;
+          // Also strip PoB suffix annotations
+          const displayLine = cleanLine.replace(/ \(enchant\)| \(implicit\)| \(crafted\)| \(fractured\)| \(Searing Exarch\)| \(Eater of Worlds\)/gi, '').trim();
+          if (!modTag && / \(crafted\)$/i.test(cleanLine)) modTag = 'crafted';
+          stats.push({ line: displayLine, rawLine: cleanLine, modTag });
+        });
+        // Sort: eldritch first, regular middle, crafted last
+        stats.sort((a, b) => {
+          const order = { exarch: 0, eater: 1, null: 2, crafted: 3 };
+          return (order[a.modTag] ?? 2) - (order[b.modTag] ?? 2);
         });
         // Extract item level and special flags
         const iLvlMatch = raw.match(/Item Level:\s*(\d+)/);
@@ -348,8 +374,10 @@ export default function App() {
         const synthesised = /Synthesised Item/i.test(raw);
         const elderItem = /Elder Item/i.test(raw);
         const shaperItem = /Shaper Item/i.test(raw);
+        const searingExarchItem = /Searing Exarch Item/i.test(raw);
+        const eaterOfWorldsItem = /Eater of Worlds Item/i.test(raw);
 
-        itemsMap[id] = { id, rarity, name, baseType, stats, properties, raw, itemLevel, fractured, synthesised, elderItem, shaperItem };
+        itemsMap[id] = { id, rarity, name, baseType, stats, properties, raw, itemLevel, fractured, synthesised, elderItem, shaperItem, searingExarchItem, eaterOfWorldsItem };
       });
 
       const groups = {};
@@ -390,6 +418,25 @@ export default function App() {
       }
 
       setGroupedItems(groups);
+
+      // Default eldritch and crafted mods to excluded (off)
+      const initExcluded = {};
+      for (const title of Object.keys(groups)) {
+        for (const cat of Object.keys(groups[title])) {
+          groups[title][cat].forEach((item, idx) => {
+            const itemId = `${title}:${cat}-${idx}`;
+            const offIndices = new Set();
+            item.stats.slice(0, 8).forEach((s, i) => {
+              if (s.modTag === 'exarch' || s.modTag === 'eater' || s.modTag === 'crafted') {
+                offIndices.add(i);
+              }
+            });
+            if (offIndices.size > 0) initExcluded[itemId] = offIndices;
+          });
+        }
+      }
+      setExcludedMods(initExcluded);
+
       const keys = Object.keys(groups);
       const savedCat = localStorage.getItem('pob-trade-itemset');
       setActiveCategory(savedCat && keys.includes(savedCat) ? savedCat : keys[0] || '');
@@ -488,10 +535,10 @@ export default function App() {
     setSearchingItems(prev => ({ ...prev, [itemId]: true }));
     try {
       const excluded = excludedMods[itemId] || new Set();
-      const filteredItem = excluded.size > 0
-        ? { ...item, stats: item.stats.filter((_, i) => !excluded.has(i)) }
-        : item;
-      const payload = await buildTradeQuery(filteredItem);
+      const filteredStats = item.stats.filter((_, i) => !excluded.has(i));
+      // Pass raw mod lines to tradeApi (it expects strings)
+      const tradeItem = { ...item, stats: filteredStats.map(s => s.rawLine) };
+      const payload = await buildTradeQuery(tradeItem);
       const searchId = await createTradeSearch(selectedLeague, payload);
       const url = getTradeResultUrl(selectedLeague, searchId);
       window.open(url, '_blank');
@@ -919,10 +966,10 @@ export default function App() {
                     {!isCollapsed && (
                       <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-slate-800/50 bg-[#0d0e12]">
                         {items.map((item, idx) => {
-                          const itemId = `${label}-${idx}`;
+                          const itemId = `${activeCategory}:${label}-${idx}`;
                           const isSearching = searchingItems[itemId];
                           return (
-                            <div key={idx} className={`bg-[#1a1c24] border rounded-2xl p-5 flex flex-col justify-between hover:border-blue-500/30 transition-all shadow-md ${item.fractured ? 'border-teal-700/60' : item.synthesised ? 'border-purple-700/60' : 'border-slate-800'}`}>
+                            <div key={idx} className={`bg-[#1a1c24] border rounded-2xl p-5 flex flex-col justify-between hover:border-blue-500/30 transition-all shadow-md ${item.searingExarchItem ? 'border-orange-700/60' : item.eaterOfWorldsItem ? 'border-blue-700/60' : item.fractured ? 'border-teal-700/60' : item.synthesised ? 'border-purple-700/60' : 'border-slate-800'}`}>
                               <div>
                                 <div className="flex justify-between items-start mb-3">
                                   <div className="flex flex-col">
@@ -933,6 +980,8 @@ export default function App() {
                                       {item.synthesised && <span className="text-[8px] font-bold text-purple-400 bg-purple-900/30 px-1.5 py-0.5 rounded">Synthesised</span>}
                                       {item.elderItem && <span className="text-[8px] font-bold text-slate-400 bg-slate-700/40 px-1.5 py-0.5 rounded">Elder</span>}
                                       {item.shaperItem && <span className="text-[8px] font-bold text-slate-400 bg-slate-700/40 px-1.5 py-0.5 rounded">Shaper</span>}
+                                      {item.searingExarchItem && <span className="text-[8px] font-bold text-orange-400 bg-orange-900/30 px-1.5 py-0.5 rounded">Searing Exarch</span>}
+                                      {item.eaterOfWorldsItem && <span className="text-[8px] font-bold text-blue-400 bg-blue-900/30 px-1.5 py-0.5 rounded">Eater of Worlds</span>}
                                     </div>
                                     <span className={`text-[9px] font-black uppercase tracking-widest opacity-80 mb-0.5 ${item.rarity === 'Unique' ? 'text-[#af6025]' : 'text-yellow-200'}`}>
                                       {item.rarity} {item.baseType}
@@ -962,8 +1011,11 @@ export default function App() {
                                 <div className="space-y-1 mb-3 min-h-[60px]">
                                   {item.stats.slice(0, 8).map((s, i) => {
                                     const isExcluded = excludedMods[itemId]?.has(i);
+                                    const isCrafted = s.modTag === 'crafted';
+                                    const isEldritch = s.modTag === 'exarch' || s.modTag === 'eater';
+                                    const modColor = isCrafted ? 'text-blue-400' : isEldritch ? 'text-orange-300' : 'text-slate-400';
                                     return (
-                                      <div key={i} className="text-[10px] text-slate-400 flex items-center gap-1.5 group/mod">
+                                      <div key={i} className={`text-[10px] ${modColor} flex items-center gap-1.5 group/mod`}>
                                         <button
                                           onClick={() => setExcludedMods(prev => {
                                             const set = new Set(prev[itemId] || []);
@@ -973,11 +1025,30 @@ export default function App() {
                                           className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 text-[8px] font-black transition-colors cursor-pointer ${isExcluded ? 'border-red-500/60 bg-red-500/10 text-red-400' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'}`}
                                           title={isExcluded ? 'Excluded from search' : 'Included in search'}
                                         >{isExcluded ? '✕' : '✓'}</button>
-                                        <span className={`truncate ${isExcluded ? 'line-through opacity-40' : ''}`}>{s}</span>
+                                        <span className={`truncate ${isExcluded ? 'line-through opacity-40' : ''}`}>{s.line}</span>
+                                        {isCrafted && <span className="text-[7px] text-blue-500/60 shrink-0">(crafted)</span>}
+                                        {s.modTag === 'exarch' && <span className="text-[7px] text-orange-400/60 shrink-0">(exarch)</span>}
+                                        {s.modTag === 'eater' && <span className="text-[7px] text-blue-400/60 shrink-0">(eater)</span>}
                                       </div>
                                     );
                                   })}
                                 </div>
+                                <div className="text-[8px] text-slate-600 cursor-pointer select-none" onClick={() => setDebugItem(debugItem === itemId ? null : itemId)}>
+                                  [debug {item.stats.length} stats, {excludedMods[itemId]?.size || 0} off]
+                                </div>
+                                {debugItem === itemId && (
+                                  <pre className="text-[7px] text-yellow-400/80 bg-black/60 p-1 rounded overflow-auto max-h-40 whitespace-pre-wrap">
+                                    {JSON.stringify({
+                                      itemId,
+                                      totalStats: item.stats.length,
+                                      shownStats: item.stats.slice(0, 8).map((s, i) => ({
+                                        i, line: s.line, modTag: s.modTag, excluded: excludedMods[itemId]?.has(i) || false
+                                      })),
+                                      excludedSet: [...(excludedMods[itemId] || [])],
+                                      rawLines: item.stats.slice(0, 8).map(s => s.rawLine)
+                                    }, null, 1)}
+                                  </pre>
+                                )}
                               </div>
                               <button
                                 onClick={() => openTrade(item, itemId)}

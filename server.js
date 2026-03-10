@@ -377,9 +377,30 @@ app.get('/api/test-pob', (_req, res) => {
   else res.status(404).json({ error: 'No test code saved' });
 });
 
-// Serve PWA
-app.use(express.static(join(__dirname, 'dist')));
+// Kill service worker — serve a self-destructing SW that unregisters + clears caches
+app.get('/sw.js', (_req, res) => {
+  res.type('application/javascript').set('Cache-Control', 'no-cache, no-store').send(
+    `self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', async () => {
+  const keys = await caches.keys();
+  await Promise.all(keys.map(k => caches.delete(k)));
+  const clients = await self.clients.matchAll();
+  clients.forEach(c => c.navigate(c.url));
+  self.registration.unregister();
+});`
+  );
+});
+
+// Serve static with no-cache for JS/CSS
+app.use(express.static(join(__dirname, 'dist'), {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.js') || path.endsWith('.css') || path.endsWith('.html')) {
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  }
+}));
 app.get('/{*splat}', (_req, res) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(join(__dirname, 'dist', 'index.html'));
 });
 
