@@ -8,6 +8,7 @@ import {
 import { createTradeSearch, getTradeResultUrl, buildTradeQuery, searchGemTrade } from './tradeApi';
 import { getGemSource } from './gemVendors';
 import PassiveTree, { decodeTreeUrl } from './PassiveTree';
+import * as api from './api';
 
 
 const CLASS_NAMES = ['Scion', 'Marauder', 'Ranger', 'Witch', 'Duelist', 'Templar', 'Shadow'];
@@ -101,12 +102,18 @@ function parseGemSetups(xmlDoc) {
   return [parseSkillSet(skillsNode, "Default")];
 }
 
-function getItemCategory(item) {
-  const raw = item.raw.toLowerCase();
+const SLOT_ORDER = {
+  'Weapon 1': 0, 'Weapon 2': 1, 'Weapon 1 Swap': 2, 'Weapon 2 Swap': 3,
+  'Helmet': 4, 'Body Armour': 5, 'Gloves': 6, 'Boots': 7,
+  'Belt': 8, 'Amulet': 9, 'Ring 1': 10, 'Ring 2': 11,
+  'Flask 1': 12, 'Flask 2': 13, 'Flask 3': 14, 'Flask 4': 15, 'Flask 5': 16,
+};
+
+function getItemCategory(item, slotName = '') {
   const base = item.baseType.toLowerCase();
-  if (item.rarity === 'Gem' || raw.includes('level: #')) return 'Skill Gems';
-  if (base.includes('flask') || raw.includes('flask')) return 'Flasks';
-  if (base.includes('jewel') || raw.includes('jewel') || base.includes('cluster')) return 'Jewels';
+  if (item.rarity === 'Gem' || item.raw.toLowerCase().includes('level: #')) return 'Skill Gems';
+  if (base.includes('flask') || slotName.startsWith('Flask')) return 'Flasks';
+  if (base.includes('jewel') || base.includes('cluster')) return 'Jewels';
   return 'Equipment';
 }
 
@@ -155,14 +162,27 @@ export default function App() {
   const [hasSession, setHasSession] = useState(false);
   const [cfReady, setCfReady] = useState(false);
   const [sessionInput, setSessionInput] = useState('');
+  const [accountName, setAccountName] = useState(null);
+  const [loginPending, setLoginPending] = useState(false);
   const [excludedMods, setExcludedMods] = useState({}); // { itemId: Set<modIndex> }
+  const [leagueStartOpen, setLeagueStartOpen] = useState(false);
+
+  // Electron login-state listener
+  useEffect(() => {
+    api.onLoginState((data) => {
+      setHasSession(data.loggedIn);
+      setAccountName(data.accountName);
+      setLoginPending(false);
+      setShowSettings(false);
+    });
+  }, []);
 
   useEffect(() => {
     (async () => {
       try {
         const [leagueRes, configRes] = await Promise.allSettled([
           fetch('https://api.pathofexile.com/leagues?type=main'),
-          fetch('/api/config'),
+          api.getConfig(),
         ]);
         if (leagueRes.status === 'fulfilled' && leagueRes.value.ok) {
           const data = await leagueRes.value.json();
@@ -177,11 +197,12 @@ export default function App() {
             setSelectedLeague(newest);
           }
         }
-        if (configRes.status === 'fulfilled' && configRes.value.ok) {
-          const cfg = await configRes.value.json();
-          setHasSession(cfg.hasSession);
+        if (configRes.status === 'fulfilled') {
+          const cfg = configRes.value;
+          setHasSession(cfg.loggedIn || cfg.hasSession);
           setCfReady(cfg.cfReady);
-          if (!cfg.hasSession) setShowSettings(true);
+          setAccountName(cfg.accountName || null);
+          if (!cfg.loggedIn && !cfg.hasSession) setShowSettings(true);
         }
       } catch { /* use defaults */ }
     })();
@@ -312,13 +333,23 @@ export default function App() {
         }
 
         const stats = [];
+        const propLines = /^(Armour|Evasion Rating|Evasion|Energy Shield|Physical Damage|Elemental Damage|Critical Strike Chance|Attacks per Second|Weapon Range|Chance to Block|Block):\s/;
         lines.forEach((line, idx) => {
           if (idx < 3 || line.includes('{') || line.startsWith('---') || line.length < 3) return;
           if (isMetadata(line)) return;
+          if (propLines.test(line)) return;
           if (line.includes(':') && !['Resistance', 'Life', 'Mana', 'Energy Shield', 'Strength', 'Dexterity', 'Intelligence'].some(s => line.includes(s))) return;
           stats.push(line);
         });
-        itemsMap[id] = { id, rarity, name, baseType, stats, properties, raw };
+        // Extract item level and special flags
+        const iLvlMatch = raw.match(/Item Level:\s*(\d+)/);
+        const itemLevel = iLvlMatch ? parseInt(iLvlMatch[1]) : null;
+        const fractured = /Fractured Item/i.test(raw);
+        const synthesised = /Synthesised Item/i.test(raw);
+        const elderItem = /Elder Item/i.test(raw);
+        const shaperItem = /Shaper Item/i.test(raw);
+
+        itemsMap[id] = { id, rarity, name, baseType, stats, properties, raw, itemLevel, fractured, synthesised, elderItem, shaperItem };
       });
 
       const groups = {};
@@ -328,8 +359,8 @@ export default function App() {
         Array.from(setNode.getElementsByTagName("Slot")).forEach(slot => {
           const item = itemsMap[slot.getAttribute('itemId')];
           if (item) {
-            const cat = getItemCategory(item);
             const slotName = slot.getAttribute('name') || '';
+            const cat = getItemCategory(item, slotName);
             if (!sub[cat].find(i => i.id === item.id)) sub[cat].push({ ...item, slotName });
           }
         });
@@ -342,12 +373,20 @@ export default function App() {
         Array.from(xmlDoc.getElementsByTagName("Slot")).forEach(slot => {
           const item = itemsMap[slot.getAttribute('itemId')];
           if (item) {
-            const cat = getItemCategory(item);
             const slotName = slot.getAttribute('name') || '';
+            const cat = getItemCategory(item, slotName);
             if (!sub[cat].find(i => i.id === item.id)) sub[cat].push({ ...item, slotName });
           }
         });
         groups["Default"] = sub;
+      }
+
+      // Sort items within each category by slot order
+      const sortBySlot = (a, b) => (SLOT_ORDER[a.slotName] ?? 99) - (SLOT_ORDER[b.slotName] ?? 99);
+      for (const title of Object.keys(groups)) {
+        for (const cat of Object.keys(groups[title])) {
+          groups[title][cat].sort(sortBySlot);
+        }
       }
 
       setGroupedItems(groups);
@@ -394,7 +433,13 @@ export default function App() {
         const decoded = decodeTreeUrl(urlText);
         if (!decoded || decoded.nodes.size === 0) continue;
         const title = specEl.getAttribute("title") || `Tree ${parsedTreeSpecs.length + 1}`;
-        parsedTreeSpecs.push({ title, nodes: decoded.nodes });
+        // Parse mastery selections: "{nodeId,effectId},{nodeId,effectId},..."
+        const masteryStr = specEl.getAttribute("masteryEffects") || "";
+        const masterySelections = {};
+        for (const m of masteryStr.matchAll(/\{(\d+),(\d+)\}/g)) {
+          masterySelections[m[1]] = parseInt(m[2]);
+        }
+        parsedTreeSpecs.push({ title, nodes: decoded.nodes, masterySelections });
       }
       setTreeSpecs(parsedTreeSpecs);
 
@@ -437,7 +482,7 @@ export default function App() {
   async function openTrade(item, itemId) {
     if (!hasSession) {
       setShowSettings(true);
-      setError("Set your POESESSID first — required for trade searches.");
+      setError("Log in with Path of Exile first — required for trade searches.");
       return;
     }
     setSearchingItems(prev => ({ ...prev, [itemId]: true }));
@@ -499,32 +544,85 @@ export default function App() {
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs font-black text-white uppercase tracking-widest">Session</span>
               <div className="flex gap-2">
-                {hasSession && <span className="text-[10px] font-bold text-green-400 bg-green-900/30 px-2 py-0.5 rounded-md">POESESSID</span>}
+                {hasSession && <span className="text-[10px] font-bold text-green-400 bg-green-900/30 px-2 py-0.5 rounded-md">Logged In</span>}
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${cfReady ? 'text-green-400 bg-green-900/30' : 'text-yellow-400 bg-yellow-900/30'}`}>
                   {cfReady ? 'CF Ready' : 'CF Loading...'}
                 </span>
               </div>
             </div>
-            <p className="text-[10px] text-slate-500 mb-3">
-              Your POESESSID from pathofexile.com. On mobile: Settings &gt; Site settings &gt; All sites &gt; pathofexile.com &gt; Cookies. Cloudflare is handled automatically.
-            </p>
-            <div className="flex gap-2">
-              <input
-                type="password"
-                value={sessionInput}
-                onChange={e => setSessionInput(e.target.value)}
-                placeholder={hasSession ? "Update POESESSID..." : "Paste POESESSID..."}
-                className="flex-1 bg-[#0a0b0e] border border-slate-800 rounded-xl px-4 py-3 text-xs font-mono text-blue-300 outline-none focus:border-blue-500/50 transition-colors"
-                onKeyDown={e => e.key === 'Enter' && saveSession()}
-              />
-              <button
-                onClick={saveSession}
-                disabled={!sessionInput.trim()}
-                className="bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-xl text-xs font-black text-white transition-all cursor-pointer disabled:opacity-30"
-              >
-                SAVE
-              </button>
-            </div>
+            {hasSession ? (
+              <div className="flex items-center justify-between">
+                <div>
+                  {accountName && <span className="text-sm font-bold text-white">{accountName}</span>}
+                  <p className="text-[10px] text-slate-500">Session active. Trade API ready.</p>
+                </div>
+                <button
+                  onClick={async () => {
+                    await api.logout();
+                    setHasSession(false);
+                    setCfReady(false);
+                    setAccountName(null);
+                  }}
+                  className="bg-red-900/30 hover:bg-red-900/50 border border-red-800 px-4 py-2 rounded-xl text-[10px] font-bold text-red-400 hover:text-red-200 transition-all cursor-pointer"
+                >
+                  LOG OUT
+                </button>
+              </div>
+            ) : (
+              <div>
+                <p className="text-[10px] text-slate-500 mb-3">
+                  Log in with your Path of Exile account. A browser window will open — log in there and it'll auto-detect your session.
+                </p>
+                <button
+                  onClick={async () => {
+                    setLoginPending(true);
+                    await api.login();
+                    // In Electron, main process sends login-state event
+                    // In browser, poll for login completion
+                    if (!api.isElectron) {
+                      const poll = setInterval(async () => {
+                        try {
+                          const cfg = await api.getConfig();
+                          if (cfg.loggedIn) {
+                            clearInterval(poll);
+                            setHasSession(true);
+                            setCfReady(cfg.cfReady);
+                            setAccountName(cfg.accountName);
+                            setLoginPending(false);
+                            setShowSettings(false);
+                          }
+                        } catch {}
+                      }, 3000);
+                      setTimeout(() => { clearInterval(poll); setLoginPending(false); }, 600000);
+                    }
+                  }}
+                  disabled={loginPending}
+                  className="w-full bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-xl text-xs font-black text-white transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {loginPending ? 'Waiting for login...' : 'LOG IN WITH PATH OF EXILE'}
+                </button>
+                {!api.isElectron && <details className="mt-3">
+                  <summary className="text-[9px] text-slate-600 cursor-pointer hover:text-slate-400">Manual POESESSID</summary>
+                  <div className="flex gap-2 mt-2">
+                    <input
+                      type="password"
+                      value={sessionInput}
+                      onChange={e => setSessionInput(e.target.value)}
+                      placeholder="Paste POESESSID..."
+                      className="flex-1 bg-[#0a0b0e] border border-slate-800 rounded-xl px-4 py-3 text-xs font-mono text-blue-300 outline-none focus:border-blue-500/50 transition-colors"
+                      onKeyDown={e => e.key === 'Enter' && saveSession()}
+                    />
+                    <button
+                      onClick={saveSession}
+                      disabled={!sessionInput.trim()}
+                      className="bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-xl text-xs font-black text-white transition-all cursor-pointer disabled:opacity-30"
+                    >
+                      SAVE
+                    </button>
+                  </div>
+                </details>}
+              </div>
+            )}
           </div>
         )}
 
@@ -603,7 +701,7 @@ export default function App() {
           </div>
         )}
 
-        {treeSpecs.length > 0 && <PassiveTree specs={treeSpecs} />}
+        {treeSpecs.length > 0 && <PassiveTree specs={treeSpecs} classId={buildClass?.classId} />}
 
         {Array.isArray(slotGems) && slotGems.length > 0 && (
           <div className="bg-[#12141c] border border-slate-800 rounded-2xl overflow-hidden shadow-lg mb-6">
@@ -718,6 +816,72 @@ export default function App() {
           </div>
         )}
 
+        {/* League Start Quick Searches */}
+        {Object.keys(groupedItems).length > 0 && (() => {
+          const leagueStartSearches = [
+            { label: '6L Pure Armour', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ar: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: '6L Pure Evasion', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ev: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: '6L Pure ES', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { es: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: '6L AR/EV', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ar: { min: 1 }, ev: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: '6L AR/ES', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ar: { min: 1 }, es: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: '6L EV/ES', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ev: { min: 1 }, es: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
+          ];
+          const leagueStartMisc = [
+            { label: 'Res Ring (60+ total)', query: { query: { type: { option: 'ring' }, filters: { type_filters: { filters: { category: { option: 'accessory.ring' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 60 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: 'Res Ring (80+ total)', query: { query: { type: { option: 'ring' }, filters: { type_filters: { filters: { category: { option: 'accessory.ring' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 80 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: 'Life + Res Ring', query: { query: { filters: { type_filters: { filters: { category: { option: 'accessory.ring' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 50 }, disabled: false }, { id: 'pseudo.pseudo_total_life', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: '30% MS Boots + Res', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.boots' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_increased_movement_speed', value: { min: 30 }, disabled: false }, { id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: '30% MS + Life Boots', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.boots' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_increased_movement_speed', value: { min: 30 }, disabled: false }, { id: 'pseudo.pseudo_total_life', value: { min: 50 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: 'Life + Res Helmet', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.helmet' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_life', value: { min: 50 }, disabled: false }, { id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: 'Life + Res Gloves', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.gloves' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_life', value: { min: 50 }, disabled: false }, { id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
+            { label: 'Life + Res Belt', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.belt' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_life', value: { min: 50 }, disabled: false }, { id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
+          ];
+          const handleLeagueSearch = async (query) => {
+            try {
+              const searchId = await createTradeSearch(selectedLeague, query);
+              const url = getTradeResultUrl(selectedLeague, searchId);
+              window.open(url, '_blank');
+            } catch (err) {
+              console.error('League start search failed:', err);
+            }
+          };
+          return (
+            <div className="bg-[#12141c] border border-slate-800 rounded-2xl overflow-hidden shadow-lg mb-6">
+              <div
+                className="px-5 py-3 flex items-center justify-between cursor-pointer hover:bg-[#161828] transition-colors"
+                onClick={() => setLeagueStartOpen(p => !p)}
+              >
+                <span className="text-xs font-black text-white uppercase tracking-widest">League Start</span>
+                {leagueStartOpen ? <ChevronUp size={18} className="text-slate-500" /> : <ChevronDown size={18} className="text-slate-500" />}
+              </div>
+              {leagueStartOpen && (
+              <div className="px-5 py-4 space-y-4 border-t border-slate-800/50">
+                <div>
+                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-2">6-Link Body Armour</span>
+                  <div className="flex flex-wrap gap-2">
+                    {leagueStartSearches.map((s, i) => (
+                      <button key={i} onClick={() => handleLeagueSearch(s.query)} className="bg-[#1a1c28] hover:bg-[#252840] border border-slate-700 hover:border-blue-600 rounded-lg px-3 py-1.5 text-[10px] font-bold text-slate-300 hover:text-white transition-all">
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-2">Gear Upgrades</span>
+                  <div className="flex flex-wrap gap-2">
+                    {leagueStartMisc.map((s, i) => (
+                      <button key={i} onClick={() => handleLeagueSearch(s.query)} className="bg-[#1a1c28] hover:bg-[#252840] border border-slate-700 hover:border-blue-600 rounded-lg px-3 py-1.5 text-[10px] font-bold text-slate-300 hover:text-white transition-all">
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              )}
+            </div>
+          );
+        })()}
+
         {activeCategory && (
           <div className="space-y-6">
             <div className="space-y-2">
@@ -758,10 +922,18 @@ export default function App() {
                           const itemId = `${label}-${idx}`;
                           const isSearching = searchingItems[itemId];
                           return (
-                            <div key={idx} className="bg-[#1a1c24] border border-slate-800 rounded-2xl p-5 flex flex-col justify-between hover:border-blue-500/30 transition-all shadow-md">
+                            <div key={idx} className={`bg-[#1a1c24] border rounded-2xl p-5 flex flex-col justify-between hover:border-blue-500/30 transition-all shadow-md ${item.fractured ? 'border-teal-700/60' : item.synthesised ? 'border-purple-700/60' : 'border-slate-800'}`}>
                               <div>
                                 <div className="flex justify-between items-start mb-3">
                                   <div className="flex flex-col">
+                                    <div className="flex items-center gap-2 mb-0.5">
+                                      {item.slotName && <span className="text-[8px] font-bold text-slate-500 bg-slate-800/80 px-1.5 py-0.5 rounded">{item.slotName}</span>}
+                                      {item.itemLevel && <span className="text-[8px] font-bold text-slate-600">iLvl {item.itemLevel}</span>}
+                                      {item.fractured && <span className="text-[8px] font-bold text-teal-400 bg-teal-900/30 px-1.5 py-0.5 rounded">Fractured</span>}
+                                      {item.synthesised && <span className="text-[8px] font-bold text-purple-400 bg-purple-900/30 px-1.5 py-0.5 rounded">Synthesised</span>}
+                                      {item.elderItem && <span className="text-[8px] font-bold text-slate-400 bg-slate-700/40 px-1.5 py-0.5 rounded">Elder</span>}
+                                      {item.shaperItem && <span className="text-[8px] font-bold text-slate-400 bg-slate-700/40 px-1.5 py-0.5 rounded">Shaper</span>}
+                                    </div>
                                     <span className={`text-[9px] font-black uppercase tracking-widest opacity-80 mb-0.5 ${item.rarity === 'Unique' ? 'text-[#af6025]' : 'text-yellow-200'}`}>
                                       {item.rarity} {item.baseType}
                                     </span>

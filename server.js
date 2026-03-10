@@ -1,5 +1,5 @@
 import express from 'express';
-import { readFileSync, existsSync, writeFileSync, mkdirSync, appendFileSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import puppeteer from 'puppeteer-extra';
@@ -13,7 +13,6 @@ const CONFIG_PATH = join(__dirname, 'config.json');
 const DIAG_PATH = join(__dirname, 'diagnostics');
 const CHROME_PATH = '/usr/bin/google-chrome';
 
-// Ensure diagnostics directory exists
 if (!existsSync(DIAG_PATH)) mkdirSync(DIAG_PATH, { recursive: true });
 
 // --- Config persistence ---
@@ -28,23 +27,124 @@ function saveConfig(cfg) {
   writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n');
 }
 
-// --- Persistent Chrome browser for CF-bypassed API calls ---
+// --- Persistent Chrome browser session ---
 let cfBrowser = null;
 let cfPage = null;
-let cfSession = { ready: false, refreshing: false };
+let cfSession = { ready: false, refreshing: false, loggedIn: false, accountName: null };
 
-async function refreshCfSession() {
+/**
+ * Launch visible Chrome window for PoE login.
+ * User logs in manually → we capture POESESSID + cf_clearance.
+ * Browser stays alive for all trade API calls.
+ */
+async function launchLoginSession() {
   if (cfSession.refreshing) return;
   cfSession.refreshing = true;
-  console.log('Launching Chrome to solve Cloudflare challenge...');
+  cfSession.loggedIn = false;
+  cfSession.accountName = null;
+  console.log('Launching Chrome for PoE login...');
 
   try {
-    // Close old browser if exists
     if (cfBrowser) await cfBrowser.close().catch(() => {});
 
     cfBrowser = await puppeteer.launch({
       executablePath: CHROME_PATH,
-      headless: 'new',
+      headless: false, // Visible — user logs in here
+      args: [
+        '--no-sandbox', '--disable-setuid-sandbox',
+        '--disable-blink-features=AutomationControlled',
+        '--window-size=1100,800',
+      ],
+    });
+    cfPage = await cfBrowser.newPage();
+    await cfPage.setViewport({ width: 1080, height: 750 });
+
+    // Navigate to PoE login page
+    await cfPage.goto('https://www.pathofexile.com/login', {
+      waitUntil: 'networkidle2',
+      timeout: 30000,
+    });
+
+    cfSession.ready = true;
+    console.log('Login window open — waiting for user to log in...');
+
+    // Poll for POESESSID cookie (user logging in)
+    pollForLogin();
+
+  } catch (err) {
+    console.error('Login launch error:', err.message);
+    cfSession.ready = true;
+  } finally {
+    cfSession.refreshing = false;
+  }
+}
+
+/**
+ * Background poll: check cookies every 2s until POESESSID appears.
+ * Once found, session is authenticated — minimize window.
+ */
+async function pollForLogin() {
+  for (let i = 0; i < 300; i++) { // 10 minutes max
+    await new Promise(r => setTimeout(r, 2000));
+    if (!cfPage || cfPage.isClosed()) return;
+    try {
+      const cookies = await cfPage.cookies('https://www.pathofexile.com');
+      const poesessid = cookies.find(c => c.name === 'POESESSID');
+      const cfClearance = cookies.find(c => c.name === 'cf_clearance');
+
+      if (poesessid) {
+        cfSession.loggedIn = true;
+        console.log(`Login detected! POESESSID found. CF: ${cfClearance ? 'yes' : 'no'}`);
+
+        // Save session cookie for persistence across restarts
+        saveConfig({ ...loadConfig(), poesessid: poesessid.value });
+
+        // Try to get account name from the page
+        try {
+          const accountName = await cfPage.evaluate(() => {
+            const el = document.querySelector('.profile-link a, .account-name, [class*="account"] a');
+            return el?.textContent?.trim() || null;
+          });
+          if (accountName) {
+            cfSession.accountName = accountName;
+            console.log(`Account: ${accountName}`);
+          }
+        } catch {}
+
+        // Navigate to trade page to keep the session warm
+        try {
+          await cfPage.goto('https://www.pathofexile.com/trade/search/Standard', {
+            waitUntil: 'networkidle2',
+            timeout: 20000,
+          });
+        } catch {}
+
+        return;
+      }
+    } catch (err) {
+      // Page might be navigating
+      if (err.message.includes('destroyed') || err.message.includes('detached')) return;
+    }
+  }
+  console.log('Login poll timed out after 10 minutes');
+}
+
+/**
+ * Restore session from saved cookies on startup (skip visible login if valid).
+ */
+async function restoreSession() {
+  const cfg = loadConfig();
+  if (!cfg.poesessid) return false;
+
+  console.log('Restoring saved session...');
+  cfSession.refreshing = true;
+
+  try {
+    if (cfBrowser) await cfBrowser.close().catch(() => {});
+
+    cfBrowser = await puppeteer.launch({
+      executablePath: CHROME_PATH,
+      headless: 'new', // Headless for restore — no window needed
       args: [
         '--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu',
         '--disable-blink-features=AutomationControlled',
@@ -54,58 +154,66 @@ async function refreshCfSession() {
     cfPage = await cfBrowser.newPage();
     await cfPage.setViewport({ width: 1920, height: 1080 });
 
-    // Navigate to trade page — triggers Cloudflare challenge
+    // Set saved POESESSID
+    await cfPage.setCookie({
+      name: 'POESESSID', value: cfg.poesessid,
+      domain: '.pathofexile.com', path: '/',
+    });
+
+    // Navigate to trade page — triggers CF challenge + validates session
     await cfPage.goto('https://www.pathofexile.com/trade/search/Standard', {
       waitUntil: 'networkidle2',
       timeout: 45000,
     });
 
-    // Wait for CF challenge to resolve
+    // Wait for CF to resolve
     let solved = false;
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 2000));
       const cookies = await cfPage.cookies('https://www.pathofexile.com');
       if (cookies.some(c => c.name === 'cf_clearance')) {
         solved = true;
-        console.log(`CF challenge solved after ${(i + 1) * 2}s`);
+        console.log(`CF solved after ${(i + 1) * 2}s`);
         break;
       }
       const title = await cfPage.title();
       if (!title.includes('moment') && !title.includes('Checking')) {
         solved = true;
-        console.log(`Page loaded without challenge after ${(i + 1) * 2}s`);
         break;
       }
     }
 
-    // Override POESESSID with user's configured one
-    const cfg = loadConfig();
-    if (cfg.poesessid) {
-      await cfPage.setCookie({
-        name: 'POESESSID', value: cfg.poesessid,
-        domain: '.pathofexile.com', path: '/',
-      });
-      console.log('Set user POESESSID on Chrome session');
+    // Verify session is still valid by checking if we're not redirected to login
+    const url = cfPage.url();
+    if (url.includes('/login')) {
+      console.log('Saved session expired — need fresh login');
+      await cfBrowser.close().catch(() => {});
+      cfBrowser = null;
+      cfPage = null;
+      cfSession.refreshing = false;
+      return false;
     }
 
     cfSession.ready = true;
-    const cookies = await cfPage.cookies('https://www.pathofexile.com');
-    console.log(`Session ${solved ? 'solved' : 'timeout'}. Cookies: ${cookies.map(c => c.name).join(', ')}`);
-    // Keep browser alive — API calls route through cfPage
+    cfSession.loggedIn = true;
+    console.log(`Session restored (${solved ? 'CF solved' : 'no CF needed'})`);
+    return true;
+
   } catch (err) {
-    console.error('Cloudflare session error:', err.message);
-    cfSession.ready = true;
+    console.error('Session restore failed:', err.message);
+    cfSession.refreshing = false;
+    return false;
   } finally {
     cfSession.refreshing = false;
   }
 }
 
-// Execute a trade API call through the persistent Chrome page (same TLS fingerprint)
+// Execute a trade API call through the persistent Chrome page
 async function chromeFetch(url, method, body) {
   for (let attempt = 0; attempt < 2; attempt++) {
     if (!cfPage || cfPage.isClosed()) {
-      await refreshCfSession();
-      if (!cfPage) throw new Error('Chrome session not ready');
+      const restored = await restoreSession();
+      if (!restored) throw new Error('No active session — please log in');
     }
     try {
       const result = await cfPage.evaluate(async (url, method, body) => {
@@ -124,11 +232,11 @@ async function chromeFetch(url, method, body) {
       }, url, method, body);
       return result;
     } catch (e) {
-      // Detached frame / crashed page — refresh and retry once
       console.log(`chromeFetch error (attempt ${attempt + 1}): ${e.message}`);
       if (attempt === 0) {
         cfPage = null;
-        await refreshCfSession();
+        const restored = await restoreSession();
+        if (!restored) throw new Error('Session lost — please log in again');
       } else {
         throw e;
       }
@@ -140,15 +248,40 @@ async function chromeFetch(url, method, body) {
 const app = express();
 app.use(express.json({ limit: '5mb' }));
 
-// Config API (POESESSID)
-app.get('/api/config', (_req, res) => {
+// Session status
+app.get('/api/config', async (_req, res) => {
   const cfg = loadConfig();
+  const cookies = cfPage ? await cfPage.cookies('https://www.pathofexile.com').catch(() => []) : [];
+  const hasCf = cookies.some(c => c.name === 'cf_clearance');
+  const hasPoe = cookies.some(c => c.name === 'POESESSID');
   res.json({
+    loggedIn: cfSession.loggedIn && hasPoe,
     hasSession: !!cfg.poesessid,
-    cfReady: cfSession.ready && !!cfPage,
+    cfReady: hasCf,
+    accountName: cfSession.accountName,
+    browserOpen: !!cfBrowser && !!cfPage,
   });
 });
 
+// Trigger login window
+app.post('/api/login', async (_req, res) => {
+  res.json({ ok: true, message: 'Opening login window...' });
+  launchLoginSession();
+});
+
+// Logout — clear session
+app.post('/api/logout', async (_req, res) => {
+  saveConfig({});
+  cfSession.loggedIn = false;
+  cfSession.accountName = null;
+  if (cfBrowser) await cfBrowser.close().catch(() => {});
+  cfBrowser = null;
+  cfPage = null;
+  cfSession.ready = false;
+  res.json({ ok: true });
+});
+
+// Legacy config endpoint (for manual POESESSID)
 app.put('/api/config', (req, res) => {
   const cfg = loadConfig();
   if (req.body.poesessid !== undefined) cfg.poesessid = req.body.poesessid;
@@ -161,15 +294,8 @@ app.post('/api/save-build', (req, res) => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `build-${timestamp}.json`;
   const filepath = join(DIAG_PATH, filename);
-  
-  const diagnosticData = {
-    timestamp: new Date().toISOString(),
-    ...req.body
-  };
-  
-  writeFileSync(filepath, JSON.stringify(diagnosticData, null, 2));
+  writeFileSync(filepath, JSON.stringify({ timestamp: new Date().toISOString(), ...req.body }, null, 2));
   console.log(`Saved build diagnostic: ${filename}`);
-  
   res.json({ ok: true, filename });
 });
 
@@ -201,17 +327,17 @@ app.get('/api/diagnostics/:file', (req, res) => {
 
 // Manual cf refresh
 app.post('/api/refresh-cf', async (_req, res) => {
-  await refreshCfSession();
-  res.json({ ready: cfSession.ready, hasCf: !!cfSession.cookies });
+  const restored = await restoreSession();
+  res.json({ restored, loggedIn: cfSession.loggedIn });
 });
 
-// Proxy /api/trade/* and /api/trade2/* to GGG via persistent Chrome (CF bypass)
+// Proxy /api/trade/* and /api/trade2/* to GGG via persistent Chrome
 app.use(['/api/trade2', '/api/trade'], async (req, res) => {
   const target = `${GGG_BASE}${req.originalUrl}`;
 
   try {
     if (!cfPage) {
-      res.status(503).json({ error: 'Chrome session not ready — try again shortly' });
+      res.status(503).json({ error: 'No active session — click "Log in with PoE" to start' });
       return;
     }
 
@@ -222,10 +348,10 @@ app.use(['/api/trade2', '/api/trade'], async (req, res) => {
 
     const result = await chromeFetch(target, req.method, body);
 
-    // If CF blocks, try refreshing the session
+    // If CF blocks, try refreshing
     if (result.status === 403 && result.body.includes('cf-')) {
-      console.log('CF blocked — refreshing...');
-      await refreshCfSession();
+      console.log('CF blocked — restoring session...');
+      await restoreSession();
       res.status(503).json({ error: 'Cloudflare session expired. Refreshing — try again.' });
       return;
     }
@@ -237,12 +363,18 @@ app.use(['/api/trade2', '/api/trade'], async (req, res) => {
     res.send(result.body);
   } catch (err) {
     console.error('Proxy error:', err.message);
-    // If Chrome crashed, try to recover
-    if (err.message.includes('not ready') || err.message.includes('destroyed')) {
-      await refreshCfSession();
+    if (err.message.includes('not ready') || err.message.includes('destroyed') || err.message.includes('log in')) {
+      await restoreSession().catch(() => {});
     }
-    res.status(502).json({ error: 'Trade API proxy error: ' + err.message });
+    res.status(502).json({ error: err.message });
   }
+});
+
+// Serve test PoB code
+app.get('/api/test-pob', (_req, res) => {
+  const fp = join(DIAG_PATH, 'test-pob-code.txt');
+  if (existsSync(fp)) res.type('text').send(readFileSync(fp, 'utf-8'));
+  else res.status(404).json({ error: 'No test code saved' });
 });
 
 // Serve PWA
@@ -254,10 +386,10 @@ app.get('/{*splat}', (_req, res) => {
 // Start
 app.listen(PORT, '0.0.0.0', async () => {
   console.log(`PoB Trade running at http://localhost:${PORT}`);
-  const cfg = loadConfig();
-  if (!cfg.poesessid) {
-    console.log('  No POESESSID — set it in the app settings');
+
+  // Try to restore saved session first (headless, no window)
+  const restored = await restoreSession();
+  if (!restored) {
+    console.log('No saved session — waiting for user to log in via the app');
   }
-  // Auto-solve Cloudflare on startup
-  await refreshCfSession();
 });

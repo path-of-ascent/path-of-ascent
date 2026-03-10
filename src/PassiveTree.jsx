@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 
 const TREE_DATA_URL = 'https://raw.githubusercontent.com/grindinggear/skilltree-export/master/data.json';
 
@@ -61,7 +61,17 @@ export function decodeTreeUrl(url) {
   }
 }
 
-export default function PassiveTree({ specs }) {
+const ASCENDANCY_BY_CLASS = {
+  0: ['Ascendant'],
+  1: ['Juggernaut', 'Berserker', 'Chieftain'],
+  2: ['Deadeye', 'Raider', 'Pathfinder'],
+  3: ['Elementalist', 'Necromancer', 'Occultist'],
+  4: ['Slayer', 'Gladiator', 'Champion'],
+  5: ['Inquisitor', 'Hierophant', 'Guardian'],
+  6: ['Assassin', 'Saboteur', 'Trickster'],
+};
+
+export default function PassiveTree({ specs, classId }) {
   const canvasRef = useRef(null);
   const hitAreasRef = useRef([]); // [{id, x, y, r, node}]
   const [treeData, setTreeData] = useState(null);
@@ -88,56 +98,105 @@ export default function PassiveTree({ specs }) {
     }
   }, [specs]);
 
-  // Compute ascendancy lab assignments by diffing across ALL tree specs
+  // Compute ascendancy for selected spec, split by class (main vs boss-granted)
+  const [ascViewClass, setAscViewClass] = useState(null); // which ascendancy class tab is active
   useEffect(() => {
     if (!treeData || !specs || specs.length === 0) { setAscendancyLabs(null); return; }
     const { nodes: treeNodes } = treeData;
+    const idx = Math.min(selectedSpec, specs.length - 1);
 
-    // Get ascendancy notables from each spec
-    const specNotables = specs.map(spec => {
+    // Get ascendancy notables from each spec up to and including selected
+    const specNotables = specs.slice(0, idx + 1).map(spec => {
       const notables = [];
       for (const id of spec.nodes) {
         const node = treeNodes[id];
         if (node?.ascendancyName && node.isNotable) {
-          notables.push({ id, name: node.name || id, stats: node.sd || [] });
+          notables.push({ id, name: node.name || id, stats: node.sd?.length ? node.sd : (node.stats || []), ascendancy: node.ascendancyName });
         }
       }
       return notables;
     });
 
-    // Diff: find when each notable first appears
+    const currentNotables = specNotables[specNotables.length - 1] || [];
+    if (currentNotables.length === 0) { setAscendancyLabs(null); return; }
+
+    // Group notables by ascendancy class
+    const byClass = {};
+    for (const n of currentNotables) {
+      if (!byClass[n.ascendancy]) byClass[n.ascendancy] = [];
+      byClass[n.ascendancy].push(n);
+    }
+
+    // Main ascendancy = the one belonging to the build's base class
+    // E.g., Templar (classId 5) → Guardian/Hierophant/Inquisitor are main, everything else is boss-granted
+    const classes = Object.keys(byClass);
+    const classAscendancies = ASCENDANCY_BY_CLASS[classId] || [];
+    let mainClass = classes.find(cls => classAscendancies.includes(cls)) || null;
+    if (!mainClass) {
+      // Fallback: most nodes
+      classes.sort((a, b) => byClass[b].length - byClass[a].length);
+      mainClass = classes[0];
+    }
+
+    // For each class, determine lab order by first appearance across specs
     const LAB_NAMES = ['Normal', 'Cruel', 'Merciless', 'Uber'];
-    const seen = new Set();
-    const labs = []; // [{label, nodes}]
-    let labIdx = 0;
-
-    for (let si = 0; si < specs.length; si++) {
-      const newInThisSpec = specNotables[si].filter(n => !seen.has(n.id));
-      if (newInThisSpec.length > 0) {
-        // Each spec that adds new notables = next lab
-        if (labIdx < 4) {
-          labs.push({ label: LAB_NAMES[labIdx], nodes: newInThisSpec });
-          labIdx++;
-        } else {
-          // More than 4 tiers — append to last
-          labs[labs.length - 1].nodes.push(...newInThisSpec);
+    const classData = {};
+    for (const cls of classes) {
+      const clsNotables = byClass[cls];
+      const notableOrder = [];
+      const seen = new Set();
+      for (let si = 0; si < specNotables.length; si++) {
+        for (const n of specNotables[si]) {
+          if (n.ascendancy === cls && !seen.has(n.id) && clsNotables.some(fn => fn.id === n.id)) {
+            notableOrder.push(n);
+            seen.add(n.id);
+          }
         }
-        for (const n of newInThisSpec) seen.add(n.id);
       }
+      const labs = [];
+      if (cls === mainClass) {
+        // Main class uses lab names
+        for (let i = 0; i < Math.min(notableOrder.length, 4); i++) {
+          labs.push({ label: LAB_NAMES[i], nodes: [notableOrder[i]] });
+        }
+      }
+      classData[cls] = { labs, notables: notableOrder, isMain: cls === mainClass };
     }
 
-    if (labs.length > 0) {
-      setAscendancyLabs({ labs, unsorted: [] });
-    } else {
-      // Single spec — can't determine lab order, show as unsorted
-      const allNotables = specNotables[specNotables.length - 1] || [];
-      if (allNotables.length > 0) {
-        setAscendancyLabs({ labs: [], unsorted: allNotables });
-      } else {
-        setAscendancyLabs(null);
+    // Sort classOrder: main class first, then the rest
+    const classOrder = [mainClass, ...classes.filter(c => c !== mainClass)];
+    setAscendancyLabs({ classes: classData, classOrder, mainClass });
+    setAscViewClass(prev => (prev && classData[prev]) ? prev : mainClass);
+  }, [treeData, specs, selectedSpec, classId]);
+
+  // Resolve mastery selections for the selected spec into readable stats
+  const masteryEffects = useMemo(() => {
+    if (!treeData || !specs || specs.length === 0) return [];
+    const spec = specs[Math.min(selectedSpec, specs.length - 1)];
+    const selections = spec.masterySelections || {};
+    const results = [];
+    for (const [nodeId, effectId] of Object.entries(selections)) {
+      const node = treeData.nodes[nodeId];
+      if (!node || !node.isMastery) continue;
+      const effect = (node.masteryEffects || []).find(e => e.effect === effectId);
+      if (effect) {
+        // Find the notable in the same group to show where on the tree this mastery is
+        let clusterNotable = null;
+        if (node.group != null) {
+          for (const [nid, n] of Object.entries(treeData.nodes)) {
+            if (n.group === node.group && n.isNotable) {
+              clusterNotable = n.name;
+              break;
+            }
+          }
+        }
+        results.push({ name: node.name || `Mastery ${nodeId}`, stats: effect.stats || [], notable: clusterNotable });
       }
     }
-  }, [treeData, specs]);
+    // Sort by mastery name
+    results.sort((a, b) => a.name.localeCompare(b.name));
+    return results;
+  }, [treeData, specs, selectedSpec]);
 
   const showTooltip = useCallback((x, y, node) => {
     if (tooltipTimer.current) clearTimeout(tooltipTimer.current);
@@ -361,17 +420,18 @@ export default function PassiveTree({ specs }) {
       const inPrev = prevNodes?.has(nodeId);
       const isNew = prevNodes && inCurrent && !inPrev;
       const isRemoved = prevNodes && !inCurrent && inPrev;
-      const isClickable = node.isKeystone || node.isNotable || node.orbit === 0;
+      const isClickable = node.isKeystone || node.isNotable || node.orbit === 0 || isRemoved;
 
-      const r = node.isKeystone ? 4 : node.isNotable ? 3 : 1.5;
+      // Make removed nodes bigger so they're visible
+      const r = node.isKeystone ? 4 : node.isNotable ? 3 : (isRemoved ? 2.5 : 1.5);
       const px = tx(pos.x);
       const py = ty(pos.y);
 
       // Glow for new/removed
       if (isNew || isRemoved) {
         ctx.beginPath();
-        ctx.arc(px, py, r + 3, 0, Math.PI * 2);
-        ctx.fillStyle = isNew ? 'rgba(50, 230, 110, 0.15)' : 'rgba(230, 60, 60, 0.12)';
+        ctx.arc(px, py, r + (isRemoved ? 5 : 3), 0, Math.PI * 2);
+        ctx.fillStyle = isNew ? 'rgba(50, 230, 110, 0.15)' : 'rgba(230, 60, 60, 0.2)';
         ctx.fill();
       }
 
@@ -401,7 +461,7 @@ export default function PassiveTree({ specs }) {
     }
     hitAreasRef.current = hitAreas;
 
-    // --- Labels for keystones and changed notables ---
+    // --- Labels for keystones, changed notables, and removed nodes ---
     const labelSize = Math.max(6, Math.min(10, scale * 80));
     ctx.font = `bold ${labelSize}px system-ui, sans-serif`;
     ctx.textAlign = 'center';
@@ -411,7 +471,6 @@ export default function PassiveTree({ specs }) {
       const node = treeNodes[nodeId];
       if (!node) continue;
       if (node.ascendancyName) continue;
-      if (!node.isKeystone && !node.isNotable) continue;
       const pos = positions[nodeId];
       if (!pos) continue;
 
@@ -420,19 +479,21 @@ export default function PassiveTree({ specs }) {
       const isNew = prevNodes && inCurrent && !inPrev;
       const isRemoved = prevNodes && !inCurrent && inPrev;
 
-      if (!node.isKeystone && !isNew && !isRemoved) continue;
+      // Label: keystones always, ALL notables, ALL removed nodes
+      if (!node.isKeystone && !node.isNotable && !isRemoved) continue;
 
-      const r = node.isKeystone ? 4 : 3;
-      ctx.fillStyle = isNew ? '#33ee77' : isRemoved ? '#ff5555' : '#e8d48a';
-      ctx.globalAlpha = isNew || isRemoved || node.isKeystone ? 1 : 0.7;
+      const r = node.isKeystone ? 4 : node.isNotable ? 3 : 2.5;
+      ctx.fillStyle = isRemoved ? '#ff5555' : isNew ? '#33ee77' : '#e8d48a';
+      ctx.globalAlpha = 1;
 
       ctx.shadowColor = '#000';
       ctx.shadowBlur = 3;
+      const label = node.name || nodeId;
       const lx = tx(pos.x);
       const ly = ty(pos.y) - r - 3;
-      const labelW = ctx.measureText(node.name || '').width;
+      const labelW = ctx.measureText(label).width;
       const clampedX = Math.max(labelW / 2 + 4, Math.min(width - labelW / 2 - 4, lx));
-      ctx.fillText(node.name || '', clampedX, Math.max(12, ly));
+      ctx.fillText(label, clampedX, Math.max(12, ly));
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
     }
@@ -540,60 +601,93 @@ export default function PassiveTree({ specs }) {
           </div>
         )}
       </div>
-      {ascendancyLabs && (ascendancyLabs.labs.length > 0 || ascendancyLabs.unsorted.length > 0) && (
+      {ascendancyLabs && ascendancyLabs.classOrder && ascendancyLabs.classOrder.length > 0 && (
         <div className="px-5 py-3 border-t border-slate-800/50 bg-[#0d0e12]">
-          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-2">Ascendancy</span>
-          {ascendancyLabs.labs.length > 0 ? (
-            <div className="space-y-1.5">
-              {ascendancyLabs.labs.map((lab, li) => (
-                <div key={li} className="flex items-start gap-2">
-                  <span className="text-[8px] font-bold text-slate-600 uppercase w-16 shrink-0 pt-0.5">{lab.label}</span>
-                  <div className="flex flex-wrap gap-x-3 gap-y-1">
-                    {lab.nodes.map((n, ni) => (
-                      <span key={ni} className="group/asc relative">
-                        <span className="text-[10px] text-amber-300/90 font-semibold cursor-default hover:text-amber-200 transition-colors border-b border-dashed border-amber-300/20 hover:border-amber-300/60">
-                          {n.name}
-                        </span>
-                        {n.stats.length > 0 && (
-                          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/asc:block z-20 pointer-events-none">
-                            <span className="bg-[#1a1c28] border border-slate-700 rounded-lg px-3 py-2 shadow-xl block max-w-[240px] min-w-[160px]">
-                              <span className="text-[10px] font-black text-amber-300 block mb-1">{n.name}</span>
-                              {n.stats.map((s, si) => (
-                                <span key={si} className="text-[9px] text-blue-300/80 leading-tight block">{s}</span>
-                              ))}
-                            </span>
-                          </span>
-                        )}
-                      </span>
-                    ))}
-                  </div>
+          <div className="flex items-center gap-3 mb-2">
+            <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Ascendancy</span>
+            {ascendancyLabs.classOrder.length > 1 ? (
+              <div className="flex gap-1">
+                {ascendancyLabs.classOrder.map(cls => {
+                  const isMain = cls === ascendancyLabs.mainClass;
+                  const isActive = cls === ascViewClass;
+                  return (
+                    <button
+                      key={cls}
+                      onClick={() => setAscViewClass(cls)}
+                      className={`px-2 py-0.5 rounded text-[9px] font-bold transition-all cursor-pointer ${isActive ? 'bg-amber-900/40 text-amber-300 border border-amber-700' : 'bg-[#1a1c28] text-slate-500 border border-slate-800 hover:text-slate-300'}`}
+                    >
+                      {cls}{isMain ? '' : ' (Boss)'}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <span className="text-[9px] font-bold text-amber-300/70">{ascendancyLabs.classOrder[0]}</span>
+            )}
+          </div>
+          {(() => {
+            const cls = ascViewClass || ascendancyLabs.mainClass;
+            const data = ascendancyLabs.classes[cls];
+            if (!data) return null;
+            if (data.labs.length > 0) {
+              return (
+                <div className="space-y-1.5">
+                  {data.labs.map((lab, li) => (
+                    <div key={li} className="flex items-start gap-2">
+                      <span className="text-[8px] font-bold text-slate-600 uppercase w-16 shrink-0 pt-0.5">{lab.label}</span>
+                      <div>
+                        {lab.nodes.map((n, ni) => (
+                          <div key={ni}>
+                            <span className="text-[10px] text-amber-300/90 font-semibold">{n.name}</span>
+                            {n.stats.length > 0 && (
+                              <div className="ml-1 mt-0.5">
+                                {n.stats.map((s, si) => (
+                                  <div key={si} className="text-[9px] text-blue-300/80 leading-tight">{s}</div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div>
-              <span className="text-[8px] text-slate-600 italic block mb-1">Unsure of lab order</span>
-              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {ascendancyLabs.unsorted.map((n, ni) => (
-                  <span key={ni} className="group/asc relative">
-                    <span className="text-[10px] text-amber-300/90 font-semibold cursor-default hover:text-amber-200 transition-colors border-b border-dashed border-amber-300/20 hover:border-amber-300/60">
-                      {n.name}
-                    </span>
+              );
+            }
+            // Boss-granted nodes (no lab names)
+            return (
+              <div className="space-y-1.5">
+                {data.notables.map((n, ni) => (
+                  <div key={ni}>
+                    <span className="text-[10px] text-amber-300/90 font-semibold">{n.name}</span>
                     {n.stats.length > 0 && (
-                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/asc:block z-20 pointer-events-none">
-                        <span className="bg-[#1a1c28] border border-slate-700 rounded-lg px-3 py-2 shadow-xl block max-w-[240px] min-w-[160px]">
-                          <span className="text-[10px] font-black text-amber-300 block mb-1">{n.name}</span>
-                          {n.stats.map((s, si) => (
-                            <span key={si} className="text-[9px] text-blue-300/80 leading-tight block">{s}</span>
-                          ))}
-                        </span>
-                      </span>
+                      <div className="ml-1 mt-0.5">
+                        {n.stats.map((s, si) => (
+                          <div key={si} className="text-[9px] text-blue-300/80 leading-tight">{s}</div>
+                        ))}
+                      </div>
                     )}
-                  </span>
+                  </div>
                 ))}
               </div>
-            </div>
-          )}
+            );
+          })()}
+        </div>
+      )}
+      {masteryEffects.length > 0 && (
+        <div className="px-5 py-3 border-t border-slate-800/50 bg-[#0d0e12]">
+          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-2">Masteries</span>
+          <div className="space-y-1.5">
+            {masteryEffects.map((m, mi) => (
+              <div key={mi}>
+                <span className="text-[10px] text-purple-300/90 font-semibold">{m.name}</span>
+                {m.notable && <span className="text-[9px] text-slate-500 ml-1.5">({m.notable})</span>}
+                {m.stats.map((s, si) => (
+                  <div key={si} className="text-[9px] text-blue-300/80 leading-tight ml-1">{s}</div>
+                ))}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

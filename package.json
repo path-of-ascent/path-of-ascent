@@ -3,13 +3,19 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "author": "Path of Ascent",
+  "description": "PoB Trade Link Generator for Path of Exile",
+  "main": "electron-main.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "serve": "vite build && node server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "electron": "vite build && electron .",
+    "electron:dev": "electron .",
+    "dist": "vite build && electron-builder"
   },
   "dependencies": {
     "express": "^5.2.1",
@@ -29,11 +35,39 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^40.8.0",
+    "electron-builder": "^26.8.1",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "tailwindcss": "^4.2.1",
     "vite": "^7.3.1"
+  },
+  "build": {
+    "appId": "com.pathofascent.app",
+    "productName": "Path of Ascent",
+    "files": [
+      "dist/**/*",
+      "electron-main.js",
+      "electron-preload.js"
+    ],
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false
+    },
+    "mac": {
+      "target": "zip"
+    }
   }
 }
