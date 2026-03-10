@@ -122,7 +122,7 @@ jobs:
               for (const file of walk(dirPath)) {
                 const name = path.basename(file);
                 // Only upload installer/app files, skip unpacked dirs and yaml
-                if (name.endsWith('.exe') || name.endsWith('.dmg') || name.endsWith('.AppImage') || name.endsWith('.zip')) {
+                if ((name.endsWith('.exe') || name.endsWith('.dmg') || name.endsWith('.AppImage') || name.endsWith('.zip')) && !name.includes('elevate')) {
                   console.log(`Uploading: ${name}`);
                   const data = fs.readFileSync(file);
                   await github.rest.repos.uploadReleaseAsset({
