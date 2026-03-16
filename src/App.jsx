@@ -1,133 +1,30 @@
 import { useState, useEffect, useRef } from 'react';
-import pako from 'pako'; // v2 - build 20260310
+import pako from 'pako';
 import {
-  Zap, ExternalLink, Copy, Check, Search, Loader2,
-  ChevronDown, ChevronUp, Shield, Gem, FlaskConical,
-  Diamond, Clock, LinkIcon, AlertTriangle, Settings
+  AlertTriangle, Clock, Loader2, Activity, TrendingUp,
+  ChevronDown, ChevronUp,
 } from 'lucide-react';
-import { createTradeSearch, getTradeResultUrl, buildTradeQuery, searchGemTrade } from './tradeApi';
+import { createTradeSearch, getTradeResultUrl, buildTradeQuery, searchGemTrade, fetchWeights, fetchWeightsBatch, fetchSlotWeights, toPobSlotName, parseGggItems } from './tradeApi';
 import { getGemSource } from './gemVendors';
 import PassiveTree, { decodeTreeUrl } from './PassiveTree';
 import * as api from './api';
+import {
+  CLASS_NAMES, ASCENDANCY_NAMES, getBuildInfo, getMainSkill,
+  GEM_COLORS, getGemColor, parseGemSetups, SLOT_ORDER,
+  getItemCategory, loadHistory, saveHistory,
+} from './constants';
 
-
-const CLASS_NAMES = ['Scion', 'Marauder', 'Ranger', 'Witch', 'Duelist', 'Templar', 'Shadow'];
-const ASCENDANCY_NAMES = {
-  0: ['Ascendant'],                              // Scion
-  1: ['Juggernaut', 'Berserker', 'Chieftain'],   // Marauder
-  2: ['Deadeye', 'Raider', 'Pathfinder'],         // Ranger
-  3: ['Elementalist', 'Necromancer', 'Occultist'], // Witch
-  4: ['Slayer', 'Gladiator', 'Champion'],         // Duelist
-  5: ['Inquisitor', 'Hierophant', 'Guardian'],   // Templar
-  6: ['Assassin', 'Saboteur', 'Trickster'],       // Shadow
-};
-
-function getBuildInfo(xmlDoc) {
-  try {
-    const spec = xmlDoc.getElementsByTagName("Spec")[0];
-    const classId = parseInt(spec?.getAttribute("classId") || "0");
-    const ascId = parseInt(spec?.getAttribute("ascendClassId") || "0");
-    const className = CLASS_NAMES[classId] || 'Unknown';
-    const ascName = ASCENDANCY_NAMES[classId]?.[ascId] || null;
-    return { className, ascName, classId };
-  } catch { return { className: 'Unknown', ascName: null, classId: 0 }; }
-}
-
-function getMainSkill(xmlDoc) {
-  try {
-    const skillsNode = xmlDoc.getElementsByTagName("Skills")[0];
-    const activeSetId = skillsNode?.getAttribute("activeSkillSet") || "1";
-    const skillSets = Array.from(xmlDoc.getElementsByTagName("SkillSet"));
-    const activeSet = skillSets.find(s => s.getAttribute("id") === activeSetId) || skillSets[0];
-    const skills = Array.from(activeSet?.getElementsByTagName("Skill") || []);
-    const mainSkill = skills.find(s => s.getAttribute("mainSkill") === "true") || skills[0];
-    const gems = Array.from(mainSkill?.getElementsByTagName("Gem") || []);
-    const mainGem = gems.find(g => !g.getAttribute("nameSpec")?.toLowerCase().includes("support")) || gems[0];
-    return mainGem?.getAttribute("nameSpec") || "Custom Build";
-  } catch { return "Custom Build"; }
-}
-
-// Gem color by primary attribute requirement (Str=red, Dex=green, Int=blue)
-const GEM_COLORS = {};
-// Red (Strength) gems
-['Molten Strike','Ground Slam','Heavy Strike','Cleave','Leap Slam','Shield Charge','Infernal Blow','Dominating Blow','Glacial Hammer','Sunder','Earthquake','Tectonic Slam','Consecrated Path','Earthshatter','Boneshatter','Perforate','Chain Hook','Bladestorm','Lacerate','Double Strike','Dual Strike','Vigilant Strike','Shield Crush','Cyclone','Ancestral Cry','Enduring Cry','Intimidating Cry','Seismic Cry','Infernal Cry','Rallying Cry','Battlemage\'s Cry','General\'s Cry','Vengeful Cry','Anger','Determination','Pride','Vitality','Punishment','Vulnerability','Warlord\'s Mark','Herald of Purity','Herald of Ash','War Banner','Defiance Banner','Flesh and Stone','Blood and Sand','Molten Shell','Steelskin','Immortal Call','Endurance Charge on Melee Stun Support','Melee Physical Damage Support','Ruthless Support','Chance to Bleed Support','Maim Support','Brutality Support','Rage Support','Pulverise Support','Bloodlust Support','Damage on Full Life Support','Iron Will Support','Iron Grip Support','Knockback Support','Life Gain on Hit Support','Lifetap Support','Stun Support','Shockwave Support','Close Combat Support','Impale Support','Volatility Support','Multistrike Support','Flamewood Support','Added Fire Damage Support','Combustion Support','Infused Channelling Support','Elemental Proliferation Support','Ancestral Call Support','Momentum Support','Raise Zombie','Summon Raging Spirit','Absolution','Animate Guardian','Holy Flame Totem','Searing Bond','Righteous Fire','Purifying Flame','Wave of Conviction','Divine Ire','Smite','Holy Sweep','Crushing Fist','Corrupting Fever','Petrified Blood','Autoexertion','Rejuvenation Totem','Summon Stone Golem','Summon Flame Golem','Devouring Totem','Decoy Totem'].forEach(n => GEM_COLORS[n] = 'red');
-// Green (Dexterity) gems
-['Burning Arrow','Split Arrow','Lightning Arrow','Ice Shot','Galvanic Arrow','Caustic Arrow','Tornado Shot','Rain of Arrows','Blast Rain','Scourge Arrow','Toxic Rain','Barrage','Elemental Hit','Spectral Throw','Spectral Helix','Frost Blades','Lightning Strike','Viper Strike','Cobra Lash','Venom Gyre','Pestilent Strike','Flicker Strike','Reave','Lacerate','Lancing Steel','Shattering Steel','Splitting Steel','Static Strike','Whirling Blades','Dash','Phase Run','Withering Step','Blink Arrow','Mirror Arrow','Ensnaring Arrow','Frenzy','Puncture','Blood Rage','Blade Flurry','Blade Trap','Grace','Haste','Dread Banner','Poacher\'s Mark','Assassin\'s Mark','Sniper\'s Mark','Herald of Agony','Herald of Ice','Pierce Support','Chain Support','Fork Support','Mirage Archer Support','Arrow Nova Support','Ballista Totem Support','Manaforged Arrows Support','Point Blank Support','Vicious Projectiles Support','Additional Accuracy Support','Blind Support','Faster Attacks Support','Added Cold Damage Support','Nightblade Support','Chance to Poison Support','Deadly Ailments Support','Trap Support','Multiple Traps Support','Cluster Trap Support','Trap and Mine Damage Support','Swift Assembly Support','Siege Ballista','Shrapnel Ballista','Artillery Ballista','Charged Dash','Kinetic Bolt','Bear Trap','Poisonous Concoction','Spectral Shield Throw','Rage Vortex','Storm Rain','Blade Blast','Smoke Mine','Summon Ice Golem'].forEach(n => GEM_COLORS[n] = 'green');
-// Blue (Intelligence) gems
-['Fireball','Freezing Pulse','Arc','Spark','Ice Nova','Ice Spear','Ball Lightning','Storm Call','Glacial Cascade','Shock Nova','Firestorm','Flameblast','Incinerate','Scorching Ray','Storm Burst','Lightning Tendrils','Blazing Salvo','Rolling Magma','Eye of Winter','Winter Orb','Divine Retribution','Creeping Frost','Frostbolt','Frostbite','Flammability','Conductivity','Elemental Weakness','Enfeeble','Despair','Temporal Chains','Discipline','Clarity','Malevolence','Hatred','Wrath','Zealotry','Purity of Elements','Purity of Fire','Purity of Ice','Purity of Lightning','Arctic Armour','Arcane Cloak','Tempest Shield','Flame Dash','Lightning Warp','Frostblink','Bodyswap','Frost Bomb','Frost Wall','Orb of Storms','Cold Snap','Detonate Dead','Volatile Dead','Dark Pact','Forbidden Rite','Essence Drain','Contagion','Blight','Soulrend','Bane','Hexblast','Blade Vortex','Bladefall','Ethereal Knives','Kinetic Blast','Power Siphon','Kinetic Fusillade','Kinetic Rain','Stormblast Mine','Icicle Mine','Pyroclast Mine','Lightning Trap','Lightning Spire Trap','Fire Trap','Flamethrower Trap','Ice Trap','Seismic Trap','Explosive Trap','Siphoning Trap','Summon Skeletons','Raise Spectre','Animate Weapon','Summon Carrion Golem','Summon Chaos Golem','Summon Lightning Golem','Summon Holy Relic','Bone Offering','Flesh Offering','Spirit Offering','Desecrate','Unearth','Spellslinger','Energy Blade','Armageddon Brand','Storm Brand','Penance Brand','Wintertide Brand','Brand Recall','Galvanic Field','Stormbind','Flame Wall','Flame Surge','Manabond','Exsanguinate','Reap','Conflagration','Voltaxic Burst','Wall of Force','Discharge','Portal','Summon Skitterbots','Summon Phantasm Support','Spell Echo Support','Spell Cascade Support','Faster Casting Support','Controlled Destruction Support','Concentrated Effect Support','Elemental Focus Support','Increased Critical Strikes Support','Increased Critical Damage Support','Power Charge On Critical Support','Added Lightning Damage Support','Hypothermia Support','Ice Bite Support','Innervate Support','Energy Leech Support','Inspiration Support','Unleash Support','Intensify Support','Hextouch Support','Blasphemy Support','Generosity Support','Cast when Damage Taken Support','Cast on Critical Strike Support','Blastchain Mine Support','Locus Mine Support','Multiple Projectiles Support','Greater Multiple Projectiles Support','Volley Support','Spell Totem Support','Minion Damage Support','Minion Life Support','Minion Speed Support','Feeding Frenzy Support','Predator Support','Fresh Meat Support','Living Lightning Support','Summon Phantasm Support','Efficacy Support','Void Manipulation Support','Cruelty Support','Unbound Ailments Support','Cold to Fire Support','Physical to Lightning Support','Elemental Damage with Attacks Support','Trinity Support','Overcharge Support','Sacred Wisps Support','Kinetic Instability Support','Infernal Legion Support','Added Chaos Damage Support','Devour Support','Sadism Support','Arcane Surge Support','Prismatic Burst Support','Wither','Empower Support','Enlighten Support','Enhance Support','Alchemist\'s Mark','Shockwave Totem','Somatic Shell','Plague Bearer','Conversion Trap','Glacial Shield Swipe','Swordstorm','Eviscerate','Automation','Melee Splash Support','Culling Strike Support'].forEach(n => GEM_COLORS[n] = 'blue');
-
-function getGemColor(name) {
-  const clean = name.replace(' Support', '');
-  return GEM_COLORS[name] || GEM_COLORS[clean] || 'blue';
-}
-
-function parseGemSetups(xmlDoc) {
-  const skillsNode = xmlDoc.getElementsByTagName("Skills")[0];
-  if (!skillsNode) return [];
-
-  const skillSets = Array.from(xmlDoc.getElementsByTagName("SkillSet"));
-
-  function parseSkillSet(node, title) {
-    const skills = Array.from(node.getElementsByTagName("Skill"));
-    const groups = [];
-    for (const skill of skills) {
-      if (skill.getAttribute("enabled") === "false") continue;
-      const slot = skill.getAttribute("slot") || "Unslotted";
-      const isMain = skill.getAttribute("mainSkill") === "true";
-      const gems = Array.from(skill.getElementsByTagName("Gem")).map(g => ({
-        name: g.getAttribute("nameSpec") || "Unknown",
-        level: parseInt(g.getAttribute("level") || "1"),
-        quality: parseInt(g.getAttribute("quality") || "0"),
-        isSupport: (g.getAttribute("gemId") || '').includes("SupportGem") || (g.getAttribute("skillId") || '').toLowerCase().startsWith("support"),
-        skillId: g.getAttribute("skillId") || "",
-      })).filter(g => g.name && g.name !== "Unknown");
-      if (gems.length === 0) continue;
-      groups.push({ slot, isMain, gems });
-    }
-
-    // Determine if this is a leveling section based on gem levels
-    const allGemLevels = groups.flatMap(g => g.gems.map(gem => gem.level));
-    const maxGemLevel = Math.max(0, ...allGemLevels);
-    const avgGemLevel = allGemLevels.length ? allGemLevels.reduce((a, b) => a + b, 0) / allGemLevels.length : 0;
-    const isLeveling = maxGemLevel <= 20 && avgGemLevel < 15;
-    const isEarlyGame = maxGemLevel <= 10 || /level|early|act [1-5]|leveling/i.test(title);
-
-    return { title, groups, isLeveling, isEarlyGame, maxGemLevel };
-  }
-
-  if (skillSets.length > 0) {
-    return skillSets.map(ss => parseSkillSet(ss, ss.getAttribute("title") || "Default"));
-  }
-  // No SkillSets — parse Skill nodes directly under Skills
-  return [parseSkillSet(skillsNode, "Default")];
-}
-
-const SLOT_ORDER = {
-  'Weapon 1': 0, 'Weapon 2': 1, 'Weapon 1 Swap': 2, 'Weapon 2 Swap': 3,
-  'Helmet': 4, 'Body Armour': 5, 'Gloves': 6, 'Boots': 7,
-  'Belt': 8, 'Amulet': 9, 'Ring 1': 10, 'Ring 2': 11,
-  'Flask 1': 12, 'Flask 2': 13, 'Flask 3': 14, 'Flask 4': 15, 'Flask 5': 16,
-};
-
-function getItemCategory(item, slotName = '') {
-  const base = item.baseType.toLowerCase();
-  if (item.rarity === 'Gem' || item.raw.toLowerCase().includes('level: #')) return 'Skill Gems';
-  if (base.includes('flask') || slotName.startsWith('Flask')) return 'Flasks';
-  if (base.includes('jewel') || base.includes('cluster')) return 'Jewels';
-  return 'Equipment';
-}
-
-function loadHistory() {
-  try {
-    return JSON.parse(localStorage.getItem('pob-trade-history') || '[]');
-  } catch { return []; }
-}
-
-function saveHistory(builds) {
-  localStorage.setItem('pob-trade-history', JSON.stringify(builds.slice(0, 5)));
-}
+// Components
+import Header from './Header';
+import GemsTab from './GemsTab';
+import CompareTab from './CompareTab';
+import ItemsTab from './ItemsTab';
+import StagesTab from './StagesTab';
+import UpgradeTab from './UpgradeTab';
+import GearAudit from './GearAudit';
 
 export default function App() {
+  // --- All state (unchanged from original) ---
   const [recentBuilds, setRecentBuilds] = useState(() => loadHistory());
   const [pobCode, setPobCode] = useState(() => {
     try { return localStorage.getItem('pob-trade-lastcode') || ''; } catch { return ''; }
@@ -162,17 +59,37 @@ export default function App() {
   const [hasSession, setHasSession] = useState(false);
   const [cfReady, setCfReady] = useState(false);
   const [sessionInput, setSessionInput] = useState('');
-  const [accountName, setAccountName] = useState(null);
+  const [accountName, setAccountName] = useState(() => {
+    try { return localStorage.getItem('pob-trade-account') || null; } catch { return null; }
+  });
   const [loginPending, setLoginPending] = useState(false);
-  const [excludedMods, setExcludedMods] = useState({}); // { itemId: Set<modIndex> }
-  const [debugItem, setDebugItem] = useState(null); // itemId to show debug for
+  const [excludedMods, setExcludedMods] = useState({});
+  const [debugItem, setDebugItem] = useState(null);
   const [leagueStartOpen, setLeagueStartOpen] = useState(false);
+  const [pobStatus, setPobStatus] = useState(null);
+  const [itemWeights, setItemWeights] = useState({});
+  const [calcingWeights, setCalcingWeights] = useState({});
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareChars, setCompareChars] = useState([]);
+  const [compareChar, setCompareChar] = useState(() => {
+    try { return localStorage.getItem('pob-trade-char') || ''; } catch { return ''; }
+  });
+  const [compareItems, setCompareItems] = useState({});
+  const [compareResults, setCompareResults] = useState({});
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareProgress, setCompareProgress] = useState('');
 
-  // Electron login-state listener
+  // Tab state (new)
+  const [activeTab, setActiveTab] = useState('items');
+
+  // --- All effects (unchanged) ---
   useEffect(() => {
     api.onLoginState((data) => {
       setHasSession(data.loggedIn);
-      setAccountName(data.accountName);
+      if (data.accountName) {
+        setAccountName(data.accountName);
+        try { localStorage.setItem('pob-trade-account', data.accountName); } catch {}
+      }
       setLoginPending(false);
       setShowSettings(false);
     });
@@ -191,9 +108,8 @@ export default function App() {
           const active = data.filter(l => !l.id.includes('SSF') && !l.id.includes('Solo')).map(l => l.id);
           setLeagues(active);
           const saved = localStorage.getItem('pob-trade-league');
-          if (saved && active.includes(saved)) {
-            setSelectedLeague(saved);
-          } else {
+          if (saved && active.includes(saved)) setSelectedLeague(saved);
+          else {
             const newest = active.find(l => !permanent.includes(l) && !l.includes('Ruthless')) || active[0];
             setSelectedLeague(newest);
           }
@@ -202,14 +118,136 @@ export default function App() {
           const cfg = configRes.value;
           setHasSession(cfg.loggedIn || cfg.hasSession);
           setCfReady(cfg.cfReady);
-          setAccountName(cfg.accountName || null);
+          if (cfg.accountName) {
+            setAccountName(cfg.accountName);
+            try { localStorage.setItem('pob-trade-account', cfg.accountName); } catch {}
+          }
           if (!cfg.loggedIn && !cfg.hasSession) setShowSettings(true);
         }
-      } catch { /* use defaults */ }
+      } catch {}
     })();
   }, []);
 
-  // Auto-load last build on startup
+  useEffect(() => {
+    async function checkPob() {
+      try { const res = await fetch('/api/pob-status'); if (res.ok) setPobStatus(await res.json()); } catch { setPobStatus(null); }
+    }
+    checkPob();
+    const iv = setInterval(checkPob, 30000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // --- All handlers (unchanged) ---
+  async function calcWeights(item, itemId) {
+    const code = localStorage.getItem('pob-trade-lastcode');
+    if (!code || !item.slotName) return;
+    setCalcingWeights(prev => ({ ...prev, [itemId]: true }));
+    try {
+      const pobSlot = toPobSlotName(item.slotName);
+      const modLines = item.stats.filter(s => !/ \(implicit\)/i.test(s.rawLine)).map(s =>
+        s.rawLine.replace(/\{[^}]*\}/g, '').replace(/ \(enchant\)| \(crafted\)| \(fractured\)| \(Searing Exarch\)| \(Eater of Worlds\)/gi, '').trim()
+      );
+      const result = await fetchWeights(code, pobSlot, modLines);
+      if (result?.weights) setItemWeights(prev => ({ ...prev, [itemId]: result }));
+    } catch (e) { console.error('Weight calc failed:', e); }
+    finally { setCalcingWeights(prev => ({ ...prev, [itemId]: false })); }
+  }
+
+  async function calcAllWeights(groups) {
+    const code = localStorage.getItem('pob-trade-lastcode');
+    if (!code) return;
+    const source = groups || groupedItems;
+    const batch = [];
+    for (const [title, cats] of Object.entries(source)) {
+      const equipItems = cats['Equipment'] || [];
+      for (let idx = 0; idx < equipItems.length; idx++) {
+        const item = equipItems[idx];
+        if (!item.slotName) continue;
+        const itemId = `${title}:Equipment-${idx}`;
+        const pobSlot = toPobSlotName(item.slotName);
+        const modLines = item.stats.filter(s => !/ \(implicit\)/i.test(s.rawLine)).map(s =>
+          s.rawLine.replace(/\{[^}]*\}/g, '').replace(/ \(enchant\)| \(crafted\)| \(fractured\)| \(Searing Exarch\)| \(Eater of Worlds\)/gi, '').trim()
+        );
+        batch.push({ itemId, slotName: pobSlot, modLines });
+        setCalcingWeights(prev => ({ ...prev, [itemId]: true }));
+      }
+    }
+    if (batch.length === 0) return;
+    try {
+      const slots = batch.map(b => ({ slotName: b.slotName, modLines: b.modLines }));
+      const results = await fetchWeightsBatch(code, slots);
+      if (!results) return;
+      const newWeights = {};
+      for (const b of batch) { const r = results[b.slotName]; if (r?.weights) newWeights[b.itemId] = r; }
+      setItemWeights(prev => ({ ...prev, ...newWeights }));
+      try { const s = await fetch('/api/pob-status'); if (s.ok) setPobStatus(await s.json()); } catch {}
+    } catch (e) { console.error('Batch weight calc failed:', e); }
+    finally {
+      const clear = {};
+      for (const b of batch) clear[b.itemId] = false;
+      setCalcingWeights(prev => ({ ...prev, ...clear }));
+    }
+  }
+
+  const lastWeightedBuild = useRef(null);
+  useEffect(() => {
+    const code = localStorage.getItem('pob-trade-lastcode');
+    if (!code) return;
+    if (Object.keys(groupedItems).length === 0) return;
+    if (lastWeightedBuild.current === code) return;
+    lastWeightedBuild.current = code;
+    setItemWeights({});
+    calcAllWeights(groupedItems);
+  }, [groupedItems]);
+
+  async function loadCompareChars() {
+    const name = (accountName || '').trim();
+    if (!name) return;
+    try {
+      const chars = await api.fetchCharacters(name);
+      const list = Array.isArray(chars) ? chars : [];
+      setCompareChars(list);
+      if (list.length === 0) setError('No characters found for that account.');
+    } catch (e) { console.error('Failed to fetch characters:', e); setError('Character lookup failed: ' + e.message); }
+  }
+
+  useEffect(() => {
+    if (accountName?.trim() && compareChars.length === 0) loadCompareChars();
+  }, [accountName]);
+
+  async function loadCharacterItems(charName) {
+    if (!charName || !accountName) return;
+    try {
+      const data = await api.fetchCharacterItems(accountName, charName);
+      const parsed = parseGggItems(data.items || []);
+      setCompareItems(parsed);
+      return parsed;
+    } catch (e) { console.error('Failed to fetch items:', e); setError('Failed to fetch character items: ' + e.message); return null; }
+  }
+
+  async function runComparison(charName) {
+    const code = localStorage.getItem('pob-trade-lastcode');
+    if (!code || !charName) return;
+    setCompareLoading(true); setCompareResults({}); setCompareProgress('Fetching items...');
+    try {
+      const parsed = await loadCharacterItems(charName);
+      if (!parsed) return;
+      const batchSlots = [];
+      for (const [slot, item] of Object.entries(parsed)) {
+        if (item.mods && item.mods.length > 0) batchSlots.push({ slotName: slot, modLines: item.mods });
+      }
+      setCompareProgress(`Calculating ${batchSlots.length} slots...`);
+      const res = await fetch('/api/compare', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pobCode: code, slots: batchSlots }),
+      });
+      if (!res.ok) throw new Error(`Compare API ${res.status}`);
+      setCompareResults(await res.json());
+      setCompareProgress('');
+    } catch (e) { console.error('Compare failed:', e); setError('Compare failed: ' + e.message); }
+    finally { setCompareLoading(false); }
+  }
+
   const autoLoadedRef = useRef(false);
   useEffect(() => {
     if (autoLoadedRef.current) return;
@@ -222,18 +260,11 @@ export default function App() {
     if (!sessionInput.trim()) return;
     try {
       const res = await fetch('/api/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ poesessid: sessionInput.trim() }),
       });
-      if (res.ok) {
-        setHasSession(true);
-        setShowSettings(false);
-        setSessionInput('');
-      }
-    } catch (e) {
-      setError('Failed to save session: ' + e.message);
-    }
+      if (res.ok) { setHasSession(true); setShowSettings(false); setSessionInput(''); }
+    } catch (e) { setError('Failed to save session: ' + e.message); }
   }
 
   function copyToClipboard(text, id) {
@@ -248,37 +279,26 @@ export default function App() {
     if (!target) return;
     target = target.trim();
 
-    // Handle pobb.in URLs — save link, prompt for PoB code
     const pobbinMatch = target.match(/pobb\.in\/([A-Za-z0-9_-]+)/);
     if (pobbinMatch) {
       const url = `https://pobb.in/${pobbinMatch[1]}`;
       setPobbinUrl(url);
       try { localStorage.setItem('pob-trade-pobbinurl', url); } catch {}
-      // If we already have a loaded build, just save the link association
       const lastCode = localStorage.getItem('pob-trade-lastcode');
-      if (lastCode && buildClass) {
-        setPobCode(lastCode);
-        setIsProcessing(false);
-        return;
-      }
-      // No build loaded — open pobb.in so user can copy the PoB export
+      if (lastCode && buildClass) { setPobCode(lastCode); setIsProcessing(false); return; }
       window.open(url, '_blank');
       setError('pobb.in link saved! Copy the PoB export code from the site and paste it here.');
       setIsProcessing(false);
       return;
     }
 
-    setIsProcessing(true);
-    setError(null);
+    setIsProcessing(true); setError(null);
     try {
-      // Save last code for reload persistence
       try { localStorage.setItem('pob-trade-lastcode', target); } catch {}
-
       const base64 = target.trim().replace(/-/g, '+').replace(/_/g, '/');
       const bytes = new Uint8Array(atob(base64).split('').map(c => c.charCodeAt(0)));
       const inflated = pako.inflate(bytes, { to: 'string' });
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(inflated, "text/xml");
+      const xmlDoc = new DOMParser().parseFromString(inflated, "text/xml");
 
       const itemsMap = {};
       Array.from(xmlDoc.getElementsByTagName("Item")).forEach(node => {
@@ -288,53 +308,46 @@ export default function App() {
         const rarityRaw = (lines[0].match(/Rarity: (\w+)/i) || [null, "Normal"])[1];
         const rarity = rarityRaw.charAt(0).toUpperCase() + rarityRaw.slice(1).toLowerCase();
 
-        // PoB item format: Rarity line, then name lines, then metadata.
-        // Unique/Rare: line1 = item name, line2 = base type
-        // Normal/Magic: line1 = base type (no separate name)
-        // Skip metadata lines like "Unique ID:", "Item Level:", etc.
-        const isMetadata = (l) => /^(Unique ID|Item Level|Quality|Sockets|LevelReq|Implicits|Variant|Selected Variant|Has Alt Variant|Has Alt Variant Two|League|Source|Crafted|Prefix|Suffix|Talisman Tier|Elder Item|Shaper Item|Fractured Item|Synthesised Item|Searing Exarch Item|Eater of Worlds Item|Radius|Limited to|Cluster Jewel):/.test(l) || /^[0-9a-f]{32,}$/i.test(l);
+        // Extract selected variants for filtering {variant:N} tagged mods
+        const itemVariant = node.getAttribute('variant');
+        const itemVariantAlt = node.getAttribute('variantAlt');
+        const itemVariantAlt2 = node.getAttribute('variantAlt2');
+        const activeVariants = new Set();
+        if (itemVariant) activeVariants.add(itemVariant);
+        if (itemVariantAlt) activeVariants.add(itemVariantAlt);
+        if (itemVariantAlt2) activeVariants.add(itemVariantAlt2);
+
+        const isMetadata = (l) => /^(Unique ID|Item Level|Quality|Sockets|LevelReq|Implicits|Variant|Selected Variant|Has Alt Variant|Has Alt Variant Two|League|Source|Crafted|Prefix|Suffix|Talisman Tier|Elder Item|Shaper Item|Fractured Item|Synthesised Item|Searing Exarch Item|Eater of Worlds Item|Radius|Limited to|Cluster Jewel|Catalyst|CatalystQuality):/.test(l) || /^[0-9a-f]{32,}$/i.test(l);
 
         let name, baseType;
         if (['Unique', 'Rare'].includes(rarity)) {
           name = lines[1] || "Unknown Item";
-          // Find base type: first non-metadata line after name
           baseType = '';
           for (let i = 2; i < Math.min(lines.length, 6); i++) {
-            if (!isMetadata(lines[i]) && !lines[i].startsWith('---')) {
-              baseType = lines[i];
-              break;
-            }
+            if (!isMetadata(lines[i]) && !lines[i].startsWith('---')) { baseType = lines[i]; break; }
           }
-        } else {
-          // Normal/Magic: line1 is the base type
-          name = lines[1] || "Unknown Item";
-          baseType = lines[1] || "";
-        }
-        // Extract defence/weapon properties
+        } else { name = lines[1] || "Unknown Item"; baseType = lines[1] || ""; }
+
         const properties = {};
         const propPatterns = {
-          'Armour': /^Armour:\s*(\d+)/,
-          'Evasion': /^Evasion Rating:\s*(\d+)|^Evasion:\s*(\d+)/,
-          'Energy Shield': /^Energy Shield:\s*(\d+)/,
-          'Physical Damage': /^Physical Damage:\s*(\d+)-(\d+)/,
-          'Elemental Damage': /^Elemental Damage:\s*(.+)/,
-          'Critical Strike Chance': /^Critical Strike Chance:\s*([\d.]+)/,
-          'Attacks per Second': /^Attacks per Second:\s*([\d.]+)/,
-          'Weapon Range': /^Weapon Range:\s*(\d+)/,
+          'Armour': /^Armour:\s*(\d+)/, 'Evasion': /^Evasion Rating:\s*(\d+)|^Evasion:\s*(\d+)/,
+          'Energy Shield': /^Energy Shield:\s*(\d+)/, 'Physical Damage': /^Physical Damage:\s*(\d+)-(\d+)/,
+          'Elemental Damage': /^Elemental Damage:\s*(.+)/, 'Critical Strike Chance': /^Critical Strike Chance:\s*([\d.]+)/,
+          'Attacks per Second': /^Attacks per Second:\s*([\d.]+)/, 'Weapon Range': /^Weapon Range:\s*(\d+)/,
         };
         for (const line of lines) {
           for (const [key, regex] of Object.entries(propPatterns)) {
             const m = line.match(regex);
             if (m) {
               if (key === 'Physical Damage') properties[key] = `${m[1]}-${m[2]}`;
-              else if (key === 'Elemental Damage') properties[key] = m[1];
               else properties[key] = m[1] || m[2];
             }
           }
         }
 
-        const stats = []; // { line, modTag } — modTag: 'exarch'|'eater'|'crafted'|null
+        const stats = [];
         const propLines = /^(Armour|Evasion Rating|Evasion|Energy Shield|Physical Damage|Elemental Damage|Critical Strike Chance|Attacks per Second|Weapon Range|Chance to Block|Block):\s/;
+        const flaskPropLines = /^(Lasts \d|Consumes \d|Currently has \d|Charges per use)/i;
         const bareMetadata = /^(Elder Item|Shaper Item|Fractured Item|Synthesised Item|Searing Exarch Item|Eater of Worlds Item|Corrupted)$/i;
         lines.forEach((line, idx) => {
           if (idx < 3 || line.startsWith('---') || line.length < 3) return;
@@ -342,42 +355,36 @@ export default function App() {
           if (isMetadata(line)) return;
           if (bareMetadata.test(line)) return;
           if (propLines.test(line)) return;
-          // Parse PoB tag prefixes: {tags:...}{exarch}{range:0.5}Mod text
+          if (flaskPropLines.test(line)) return;
           let modTag = null;
           let cleanLine = line;
           if (line.includes('{')) {
-            // Extract mod type from tags
+            // Filter variant-specific mods: only include if variant matches selected
+            const variantMatch = line.match(/\{variant:(\d+)\}/);
+            if (variantMatch && activeVariants.size > 0 && !activeVariants.has(variantMatch[1])) return;
             if (/\{exarch\}/i.test(line)) modTag = 'exarch';
             else if (/\{eater\}/i.test(line)) modTag = 'eater';
             else if (/\{crafted\}/i.test(line)) modTag = 'crafted';
-            // Strip all {tag} prefixes
             cleanLine = line.replace(/\{[^}]*\}/g, '').trim();
             if (!cleanLine || cleanLine.length < 3) return;
-            // Skip internal PoB lines (Prefix:, Suffix:, etc.)
             if (/^(Prefix|Suffix|None)/.test(cleanLine)) return;
           }
           if (cleanLine.includes(':') && !['Resistance', 'Life', 'Mana', 'Energy Shield', 'Strength', 'Dexterity', 'Intelligence'].some(s => cleanLine.includes(s))) return;
-          // Also strip PoB suffix annotations
           const displayLine = cleanLine.replace(/ \(enchant\)| \(implicit\)| \(crafted\)| \(fractured\)| \(Searing Exarch\)| \(Eater of Worlds\)/gi, '').trim();
           if (!modTag && / \(crafted\)$/i.test(cleanLine)) modTag = 'crafted';
           stats.push({ line: displayLine, rawLine: cleanLine, modTag });
         });
-        // Sort: eldritch first, regular middle, crafted last
         stats.sort((a, b) => {
           const order = { exarch: 0, eater: 1, null: 2, crafted: 3 };
           return (order[a.modTag] ?? 2) - (order[b.modTag] ?? 2);
         });
-        // Extract item level and special flags
         const iLvlMatch = raw.match(/Item Level:\s*(\d+)/);
         const itemLevel = iLvlMatch ? parseInt(iLvlMatch[1]) : null;
-        const fractured = /Fractured Item/i.test(raw);
-        const synthesised = /Synthesised Item/i.test(raw);
-        const elderItem = /Elder Item/i.test(raw);
-        const shaperItem = /Shaper Item/i.test(raw);
-        const searingExarchItem = /Searing Exarch Item/i.test(raw);
-        const eaterOfWorldsItem = /Eater of Worlds Item/i.test(raw);
-
-        itemsMap[id] = { id, rarity, name, baseType, stats, properties, raw, itemLevel, fractured, synthesised, elderItem, shaperItem, searingExarchItem, eaterOfWorldsItem };
+        itemsMap[id] = { id, rarity, name, baseType, stats, properties, raw, itemLevel,
+          fractured: /Fractured Item/i.test(raw), synthesised: /Synthesised Item/i.test(raw),
+          elderItem: /Elder Item/i.test(raw), shaperItem: /Shaper Item/i.test(raw),
+          searingExarchItem: /Searing Exarch Item/i.test(raw), eaterOfWorldsItem: /Eater of Worlds Item/i.test(raw),
+        };
       });
 
       const groups = {};
@@ -389,13 +396,11 @@ export default function App() {
           if (item) {
             const slotName = slot.getAttribute('name') || '';
             const cat = getItemCategory(item, slotName);
-            if (!sub[cat].find(i => i.id === item.id)) sub[cat].push({ ...item, slotName });
+            if (cat && !sub[cat].find(i => i.id === item.id)) sub[cat].push({ ...item, slotName });
           }
         });
         groups[title] = sub;
       });
-
-      // If no ItemSets, grab items from Slots directly
       if (Object.keys(groups).length === 0) {
         const sub = { Equipment: [], 'Skill Gems': [], Flasks: [], Jewels: [] };
         Array.from(xmlDoc.getElementsByTagName("Slot")).forEach(slot => {
@@ -403,23 +408,17 @@ export default function App() {
           if (item) {
             const slotName = slot.getAttribute('name') || '';
             const cat = getItemCategory(item, slotName);
-            if (!sub[cat].find(i => i.id === item.id)) sub[cat].push({ ...item, slotName });
+            if (cat && !sub[cat].find(i => i.id === item.id)) sub[cat].push({ ...item, slotName });
           }
         });
         groups["Default"] = sub;
       }
-
-      // Sort items within each category by slot order
       const sortBySlot = (a, b) => (SLOT_ORDER[a.slotName] ?? 99) - (SLOT_ORDER[b.slotName] ?? 99);
       for (const title of Object.keys(groups)) {
-        for (const cat of Object.keys(groups[title])) {
-          groups[title][cat].sort(sortBySlot);
-        }
+        for (const cat of Object.keys(groups[title])) groups[title][cat].sort(sortBySlot);
       }
-
       setGroupedItems(groups);
 
-      // Default eldritch and crafted mods to excluded (off)
       const initExcluded = {};
       for (const title of Object.keys(groups)) {
         for (const cat of Object.keys(groups[title])) {
@@ -427,9 +426,7 @@ export default function App() {
             const itemId = `${title}:${cat}-${idx}`;
             const offIndices = new Set();
             item.stats.slice(0, 8).forEach((s, i) => {
-              if (s.modTag === 'exarch' || s.modTag === 'eater' || s.modTag === 'crafted') {
-                offIndices.add(i);
-              }
+              if (s.modTag === 'exarch' || s.modTag === 'eater' || s.modTag === 'crafted') offIndices.add(i);
             });
             if (offIndices.size > 0) initExcluded[itemId] = offIndices;
           });
@@ -441,61 +438,83 @@ export default function App() {
       const savedCat = localStorage.getItem('pob-trade-itemset');
       setActiveCategory(savedCat && keys.includes(savedCat) ? savedCat : keys[0] || '');
 
-      // Parse class and gem setups
       const buildInfo = getBuildInfo(xmlDoc);
       setBuildClass(buildInfo);
       const setups = parseGemSetups(xmlDoc);
-      setGemSetups(setups);
 
-      // Enrich all gem setups with source/color info
       const activeSkillSetId = xmlDoc.getElementsByTagName("Skills")[0]?.getAttribute("activeSkillSet") || "1";
       const skillSetsXml = Array.from(xmlDoc.getElementsByTagName("SkillSet"));
       const enrichedSetups = setups.map((setup, i) => {
         const isActive = skillSetsXml[i]?.getAttribute("id") === activeSkillSetId;
-        const groups = setup.groups.map(group => {
+        const grps = setup.groups.map(group => {
           const gems = group.gems.map(g => {
             const src = getGemSource(g.name, buildInfo.className, setup.isEarlyGame);
             return { ...g, source: src.text, sourceDetail: src.detail, color: getGemColor(g.name) };
           });
           return { ...group, gems };
         });
-        return { ...setup, groups, isActive };
+        return { ...setup, groups: grps, isActive };
       });
       setGemSetups(enrichedSetups);
 
-      // Default to saved or active skill set
       const savedGemIdx = parseInt(localStorage.getItem('pob-trade-gemsetup') || '-1');
       const activeIdx = enrichedSetups.findIndex(s => s.isActive);
       const chosenIdx = savedGemIdx >= 0 && savedGemIdx < enrichedSetups.length ? savedGemIdx : (activeIdx >= 0 ? activeIdx : 0);
       setSelectedSetupIdx(chosenIdx);
       setSlotGems(enrichedSetups[chosenIdx]?.groups || []);
 
-      // Parse passive tree specs
       const parsedTreeSpecs = [];
-      const specElements = Array.from(xmlDoc.getElementsByTagName("Spec"));
-      for (const specEl of specElements) {
-        const urlEl = specEl.getElementsByTagName("URL")[0];
-        const urlText = urlEl?.textContent?.trim();
+      for (const specEl of Array.from(xmlDoc.getElementsByTagName("Spec"))) {
+        const urlText = specEl.getElementsByTagName("URL")[0]?.textContent?.trim();
         if (!urlText) continue;
         const decoded = decodeTreeUrl(urlText);
         if (!decoded || decoded.nodes.size === 0) continue;
         const title = specEl.getAttribute("title") || `Tree ${parsedTreeSpecs.length + 1}`;
-        // Parse mastery selections: "{nodeId,effectId},{nodeId,effectId},..."
         const masteryStr = specEl.getAttribute("masteryEffects") || "";
         const masterySelections = {};
-        for (const m of masteryStr.matchAll(/\{(\d+),(\d+)\}/g)) {
-          masterySelections[m[1]] = parseInt(m[2]);
+        for (const m of masteryStr.matchAll(/\{(\d+),(\d+)\}/g)) masterySelections[m[1]] = parseInt(m[2]);
+        // Parse jewel sockets from <Sockets> element
+        const jewelSockets = {};
+        const socketsEl = specEl.getElementsByTagName("Sockets")[0];
+        if (socketsEl) {
+          for (const socketEl of Array.from(socketsEl.getElementsByTagName("Socket"))) {
+            const nodeId = socketEl.getAttribute("nodeId");
+            const itemId = socketEl.getAttribute("itemId");
+            if (nodeId && itemId && itemsMap[itemId]) {
+              jewelSockets[nodeId] = itemsMap[itemId];
+            }
+          }
         }
-        parsedTreeSpecs.push({ title, nodes: decoded.nodes, masterySelections });
+        parsedTreeSpecs.push({ title, nodes: decoded.nodes, masterySelections, jewelSockets });
       }
       setTreeSpecs(parsedTreeSpecs);
 
-      // Save full build to server for diagnostics
-      fetch('/api/save-pob', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pobCode: target }),
-      }).catch(() => {});
+      // Inject tree-socketed jewels from the ACTIVE spec (not the last one)
+      const treeEl = xmlDoc.getElementsByTagName("Tree")[0];
+      const activeSpecIdx = treeEl ? parseInt(treeEl.getAttribute("activeSpec") || "1") - 1 : parsedTreeSpecs.length - 1;
+      const bestSpec = parsedTreeSpecs[Math.min(activeSpecIdx, parsedTreeSpecs.length - 1)] || null;
+      if (bestSpec?.jewelSockets) {
+        const treeJewels = Object.entries(bestSpec.jewelSockets).map(([nodeId, item]) => ({
+          ...item,
+          slotName: `Tree Socket ${nodeId}`,
+          isTreeJewel: true,
+        }));
+        for (const title of Object.keys(groups)) {
+          const existing = groups[title].Jewels || [];
+          const existingIds = new Set(existing.map(j => j.id));
+          for (const tj of treeJewels) {
+            if (!existingIds.has(tj.id)) {
+              existing.push(tj);
+              existingIds.add(tj.id);
+            }
+          }
+          groups[title].Jewels = existing;
+        }
+        // Re-set grouped items with injected jewels
+        setGroupedItems({...groups});
+      }
+
+      fetch('/api/save-pob', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pobCode: target }) }).catch(() => {});
 
       if (!codeOverride) {
         const skillName = getMainSkill(xmlDoc);
@@ -509,9 +528,7 @@ export default function App() {
     } catch (e) {
       console.error("Process error", e);
       setError("Failed to decode PoB string. Make sure you're pasting a valid export code.");
-    } finally {
-      setIsProcessing(false);
-    }
+    } finally { setIsProcessing(false); }
   }
 
   function createPobbin() {
@@ -521,199 +538,54 @@ export default function App() {
       window.open('https://pobb.in', '_blank');
       setFeedbackId('pobbin-copied');
       setTimeout(() => setFeedbackId(null), 3000);
-    }).catch(() => {
-      window.open('https://pobb.in', '_blank');
-    });
+    }).catch(() => window.open('https://pobb.in', '_blank'));
   }
 
-  async function openTrade(item, itemId) {
-    if (!hasSession) {
-      setShowSettings(true);
-      setError("Log in with Path of Exile first — required for trade searches.");
-      return;
-    }
+  async function openTrade(item, itemId, useWeights = false) {
+    if (!hasSession) { setShowSettings(true); setError("Log in with Path of Exile first — required for trade searches."); return; }
     setSearchingItems(prev => ({ ...prev, [itemId]: true }));
     try {
       const excluded = excludedMods[itemId] || new Set();
       const filteredStats = item.stats.filter((_, i) => !excluded.has(i));
-      // Pass raw mod lines to tradeApi (it expects strings)
       const tradeItem = { ...item, stats: filteredStats.map(s => s.rawLine) };
-      const payload = await buildTradeQuery(tradeItem);
+      let weights = null;
+      if (useWeights) {
+        const code = localStorage.getItem('pob-trade-lastcode');
+        if (code && item.slotName) weights = await fetchSlotWeights(code, toPobSlotName(item.slotName));
+      }
+      const payload = await buildTradeQuery(tradeItem, weights);
       const searchId = await createTradeSearch(selectedLeague, payload);
-      const url = getTradeResultUrl(selectedLeague, searchId);
-      window.open(url, '_blank');
-    } catch (e) {
-      console.error("Trade search failed", e);
-      setError(`Trade search failed: ${e.message}`);
-    } finally {
-      setSearchingItems(prev => ({ ...prev, [itemId]: false }));
-    }
+      window.open(getTradeResultUrl(selectedLeague, searchId), '_blank');
+    } catch (e) { console.error("Trade search failed", e); setError(`Trade search failed: ${e.message}`); }
+    finally { setSearchingItems(prev => ({ ...prev, [itemId]: false })); }
   }
 
-  const activeSubGroups = groupedItems[activeCategory] || {};
-
-  const categoryConfig = [
-    { label: 'Equipment', icon: <Shield size={16} /> },
-    { label: 'Skill Gems', icon: <Gem size={16} /> },
-    { label: 'Flasks', icon: <FlaskConical size={16} /> },
-    { label: 'Jewels', icon: <Diamond size={16} /> },
+  // --- Render (tabbed layout) ---
+  const tabs = [
+    { id: 'items', label: 'Items' },
+    { id: 'gems', label: 'Gems' },
+    { id: 'stages', label: 'Stages' },
+    { id: 'upgrade', label: 'Upgrade' },
+    { id: 'audit', label: 'My Gear' },
   ];
 
   return (
     <div className="min-h-screen bg-[#090a0c] text-slate-300 font-sans p-4 md:p-8">
       <div className="max-w-4xl mx-auto">
-        <header className="flex justify-between items-center mb-8">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-blue-600 rounded-xl shadow-lg shadow-blue-900/40">
-              <Zap className="text-white fill-white" size={20} />
-            </div>
-            <h1 className="text-2xl font-black text-white italic uppercase tracking-tighter">Path of Ascent</h1>
-          </div>
-          <div className="flex items-center gap-2">
-            <select
-              value={selectedLeague}
-              onChange={e => { setSelectedLeague(e.target.value); try { localStorage.setItem('pob-trade-league', e.target.value); } catch {} }}
-              className="bg-[#12141c] border border-slate-800 rounded-lg px-3 py-2 text-xs font-black text-blue-400 outline-none"
-            >
-              {leagues.map(l => <option key={l} value={l}>{l}</option>)}
-            </select>
-            <button
-              onClick={() => setShowSettings(s => !s)}
-              className={`p-2 rounded-lg border transition-colors cursor-pointer ${hasSession && cfReady ? 'bg-[#12141c] border-slate-800 text-slate-400 hover:text-white' : 'bg-red-900/30 border-red-800 text-red-400 hover:text-red-200'}`}
-            >
-              <Settings size={16} />
-            </button>
-          </div>
-        </header>
-
-        {showSettings && (
-          <div className="bg-[#12141c] rounded-2xl border border-slate-800 p-5 mb-4 shadow-2xl">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-black text-white uppercase tracking-widest">Session</span>
-              <div className="flex gap-2">
-                {hasSession && <span className="text-[10px] font-bold text-green-400 bg-green-900/30 px-2 py-0.5 rounded-md">Logged In</span>}
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${cfReady ? 'text-green-400 bg-green-900/30' : 'text-yellow-400 bg-yellow-900/30'}`}>
-                  {cfReady ? 'CF Ready' : 'CF Loading...'}
-                </span>
-              </div>
-            </div>
-            {hasSession ? (
-              <div className="flex items-center justify-between">
-                <div>
-                  {accountName && <span className="text-sm font-bold text-white">{accountName}</span>}
-                  <p className="text-[10px] text-slate-500">Session active. Trade API ready.</p>
-                </div>
-                <button
-                  onClick={async () => {
-                    await api.logout();
-                    setHasSession(false);
-                    setCfReady(false);
-                    setAccountName(null);
-                  }}
-                  className="bg-red-900/30 hover:bg-red-900/50 border border-red-800 px-4 py-2 rounded-xl text-[10px] font-bold text-red-400 hover:text-red-200 transition-all cursor-pointer"
-                >
-                  LOG OUT
-                </button>
-              </div>
-            ) : (
-              <div>
-                <p className="text-[10px] text-slate-500 mb-3">
-                  Log in with your Path of Exile account. A browser window will open — log in there and it'll auto-detect your session.
-                </p>
-                <button
-                  onClick={async () => {
-                    setLoginPending(true);
-                    await api.login();
-                    // In Electron, main process sends login-state event
-                    // In browser, poll for login completion
-                    if (!api.isElectron) {
-                      const poll = setInterval(async () => {
-                        try {
-                          const cfg = await api.getConfig();
-                          if (cfg.loggedIn) {
-                            clearInterval(poll);
-                            setHasSession(true);
-                            setCfReady(cfg.cfReady);
-                            setAccountName(cfg.accountName);
-                            setLoginPending(false);
-                            setShowSettings(false);
-                          }
-                        } catch {}
-                      }, 3000);
-                      setTimeout(() => { clearInterval(poll); setLoginPending(false); }, 600000);
-                    }
-                  }}
-                  disabled={loginPending}
-                  className="w-full bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-xl text-xs font-black text-white transition-all cursor-pointer disabled:opacity-50"
-                >
-                  {loginPending ? 'Waiting for login...' : 'LOG IN WITH PATH OF EXILE'}
-                </button>
-                {!api.isElectron && <details className="mt-3">
-                  <summary className="text-[9px] text-slate-600 cursor-pointer hover:text-slate-400">Manual POESESSID</summary>
-                  <div className="flex gap-2 mt-2">
-                    <input
-                      type="password"
-                      value={sessionInput}
-                      onChange={e => setSessionInput(e.target.value)}
-                      placeholder="Paste POESESSID..."
-                      className="flex-1 bg-[#0a0b0e] border border-slate-800 rounded-xl px-4 py-3 text-xs font-mono text-blue-300 outline-none focus:border-blue-500/50 transition-colors"
-                      onKeyDown={e => e.key === 'Enter' && saveSession()}
-                    />
-                    <button
-                      onClick={saveSession}
-                      disabled={!sessionInput.trim()}
-                      className="bg-blue-600 hover:bg-blue-700 px-5 py-3 rounded-xl text-xs font-black text-white transition-all cursor-pointer disabled:opacity-30"
-                    >
-                      SAVE
-                    </button>
-                  </div>
-                </details>}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="bg-[#12141c] rounded-3xl border border-slate-800 p-6 mb-4 shadow-2xl">
-          <textarea
-            value={pobCode}
-            onChange={e => setPobCode(e.target.value)}
-            placeholder="Paste PoB export code or pobb.in link..."
-            className="w-full h-20 bg-[#0a0b0e] border border-slate-800 rounded-2xl p-4 text-[10px] font-mono text-blue-300 outline-none mb-3 resize-none focus:border-blue-500/50 transition-colors"
-          />
-          <div className="flex gap-2 mb-3">
-            <button
-              onClick={() => processPoB()}
-              disabled={isProcessing}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 py-4 rounded-2xl font-black text-white transition-all flex justify-center items-center gap-2 active:scale-95 shadow-xl cursor-pointer disabled:opacity-50"
-            >
-              {isProcessing ? <Loader2 className="animate-spin" size={20} /> : "GENERATE TRADE LINKS"}
-            </button>
-            {pobCode && (
-              <button
-                onClick={() => setPobCode('')}
-                className="px-4 py-4 rounded-2xl border border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-600 text-xs font-bold transition-colors cursor-pointer"
-              >CLEAR</button>
-            )}
-          </div>
-          {(pobbinUrl || buildClass) && (
-            <div className="flex items-center gap-2 flex-wrap">
-              {pobbinUrl && (
-                <a href={pobbinUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-purple-400 hover:text-purple-300 font-bold bg-purple-400/10 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-colors">
-                  <LinkIcon size={10} /> {pobbinUrl.replace('https://', '')}
-                </a>
-              )}
-              {!pobbinUrl && buildClass && (
-                <button
-                  onClick={createPobbin}
-                  className="text-[10px] text-purple-400 hover:text-purple-300 font-bold bg-purple-400/10 hover:bg-purple-400/20 px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <LinkIcon size={10} />
-                  {feedbackId === 'pobbin-copied' ? 'Copied! Paste on pobb.in' : 'Create pobb.in'}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        <Header
+          pobCode={pobCode} setPobCode={setPobCode} pobbinUrl={pobbinUrl}
+          selectedLeague={selectedLeague} setSelectedLeague={setSelectedLeague} leagues={leagues}
+          showSettings={showSettings} setShowSettings={setShowSettings}
+          hasSession={hasSession} setHasSession={setHasSession} cfReady={cfReady} setCfReady={setCfReady}
+          sessionInput={sessionInput} setSessionInput={setSessionInput}
+          accountName={accountName} setAccountName={setAccountName}
+          loginPending={loginPending} setLoginPending={setLoginPending}
+          compareChars={compareChars} setCompareChars={setCompareChars}
+          compareChar={compareChar} setCompareChar={setCompareChar}
+          pobStatus={pobStatus} buildClass={buildClass} feedbackId={feedbackId}
+          isProcessing={isProcessing} processPoB={processPoB}
+          saveSession={saveSession} loadCompareChars={loadCompareChars} createPobbin={createPobbin}
+        />
 
         {error && (
           <div className="mb-4 bg-red-900/30 border border-red-800 rounded-xl p-4 flex items-start gap-3">
@@ -726,9 +598,7 @@ export default function App() {
         {recentBuilds.length > 0 && (
           <div className="mb-8 flex flex-wrap gap-2">
             {recentBuilds.map((b, i) => (
-              <button
-                key={i}
-                onClick={() => { setPobCode(b.pobCode); setPobbinUrl(b.pobbinUrl || ''); processPoB(b.pobCode); }}
+              <button key={i} onClick={() => { setPobCode(b.pobCode); setPobbinUrl(b.pobbinUrl || ''); processPoB(b.pobCode); }}
                 className="bg-[#1a1c24] border border-slate-800 hover:border-blue-500/50 px-4 py-3 rounded-xl flex items-center gap-3 transition-all group cursor-pointer"
               >
                 <Clock size={12} className="text-blue-500" />
@@ -738,339 +608,120 @@ export default function App() {
           </div>
         )}
 
+        {/* Build info + tab bar */}
         {buildClass && (
-          <div className="mb-6 flex items-center gap-3">
-            <div className="bg-[#12141c] border border-slate-800 rounded-xl px-4 py-3">
-              <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mr-2">Class</span>
-              <span className="text-sm font-black text-white">{buildClass.ascName || buildClass.className}</span>
-              {buildClass.ascName && <span className="text-[10px] text-slate-500 ml-1">({buildClass.className})</span>}
+          <div className="mb-6 bg-[#12141c] border border-slate-800 rounded-2xl p-4 shadow-lg">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-black text-white">{buildClass.ascName || buildClass.className}</span>
+                {buildClass.ascName && <span className="text-[10px] text-slate-500">({buildClass.className})</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                {Object.keys(itemWeights).length > 0 && (
+                  <span className="text-[8px] text-emerald-400/60 font-bold">{Object.keys(itemWeights).length} weighted</span>
+                )}
+                <div className={`flex items-center gap-1 px-2 py-1 rounded text-[8px] font-bold ${pobStatus?.running ? 'text-emerald-400 bg-emerald-900/20' : 'text-slate-600 bg-slate-800/50'}`}>
+                  <Activity size={8} />
+                  {pobStatus?.running ? 'PoB' : 'PoB off'}
+                </div>
+              </div>
             </div>
+            {/* Character selector for compare (stays near build info) */}
+            {compareChars.length > 0 && (
+              <div className="flex items-center gap-2 mt-2">
+                <select value={compareChar}
+                  onChange={e => { setCompareChar(e.target.value); try { localStorage.setItem('pob-trade-char', e.target.value); } catch {} }}
+                  className="bg-[#0a0b0e] border border-slate-700 rounded-lg px-2 py-1.5 text-[9px] font-bold text-slate-300 outline-none focus:border-yellow-600/50 max-w-[250px]"
+                >
+                  <option value="">Compare character...</option>
+                  {compareChars.map(c => <option key={c.name} value={c.name}>{c.name} (Lv{c.level})</option>)}
+                </select>
+              </div>
+            )}
           </div>
         )}
 
         {treeSpecs.length > 0 && <PassiveTree specs={treeSpecs} classId={buildClass?.classId} />}
 
-        {Array.isArray(slotGems) && slotGems.length > 0 && (
-          <div className="bg-[#12141c] border border-slate-800 rounded-2xl overflow-hidden shadow-lg mb-6">
-            <div className="px-5 py-3 border-b border-slate-800/50 flex items-center justify-between">
-              <span className="text-xs font-black text-white uppercase tracking-widest">Gems</span>
-              {gemSetups.length > 1 && (
-                <select
-                  value={selectedSetupIdx}
-                  onChange={e => { const idx = parseInt(e.target.value); setSelectedSetupIdx(idx); setSlotGems(gemSetups[idx]?.groups || []); try { localStorage.setItem('pob-trade-gemsetup', idx.toString()); } catch {} }}
-                  className="bg-[#0a0c12] border border-slate-700 rounded-lg px-2 py-1 text-[10px] font-bold text-slate-300 appearance-none outline-none"
-                >
-                  {gemSetups.map((s, i) => <option key={i} value={i}>{s.title}{s.isActive ? ' ★' : ''}</option>)}
-                </select>
-              )}
+        {/* Tab bar (below tree) */}
+        {buildClass && (
+          <div className="flex items-center gap-2 mb-4 mt-4 overflow-x-auto pb-1 -mx-1 px-1">
+            <div className="flex rounded-lg overflow-hidden border border-slate-700 shrink-0">
+              {tabs.map(t => (
+                <button key={t.id}
+                  onClick={() => {
+                    setActiveTab(t.id);
+                    if (t.id === 'audit' && Object.keys(compareItems).length === 0 && !compareLoading && compareChar) {
+                      runComparison(compareChar);
+                    }
+                  }}
+                  className={`px-4 py-2.5 min-h-[44px] text-[10px] font-black uppercase cursor-pointer transition-all whitespace-nowrap ${
+                    activeTab === t.id ? 'bg-blue-600/20 text-blue-400' : 'bg-transparent text-slate-500 hover:text-slate-300'
+                  }`}
+                >{t.label}</button>
+              ))}
             </div>
-            <div className="px-5 py-4 space-y-4">
-              {(() => {
-                // Compute diff: gems in current setup vs previous setup
-                const prevSetup = selectedSetupIdx > 0 ? gemSetups[selectedSetupIdx - 1] : null;
-                const prevGemNames = new Set();
-                if (prevSetup) {
-                  for (const g of prevSetup.groups) {
-                    for (const gem of g.gems) prevGemNames.add(gem.name);
-                  }
-                }
-                const curGemNames = new Set();
-                for (const g of slotGems) {
-                  for (const gem of g.gems) curGemNames.add(gem.name);
-                }
-                const removedGems = prevSetup ? [...prevGemNames].filter(n => !curGemNames.has(n)) : [];
-
-                return <>
-                  {slotGems.map((group, gi) => {
-                    const actives = group.gems.filter(g => !g.isSupport);
-                    const supports = group.gems.filter(g => g.isSupport);
-                    const colorMap = { red: 'text-[#e8a4a4]', green: 'text-[#a4d8a4]', blue: 'text-[#a4b8d8]' };
-                    const linkCount = group.gems.length;
-                    const linkLabel = linkCount > 1 ? `${linkCount}L` : '';
-                    const hasLinks = supports.length > 0;
-                    const isNew = (name) => prevSetup && !prevGemNames.has(name);
-                    return (
-                      <div key={gi} className="border-b border-slate-800/30 pb-3 last:border-0 last:pb-0">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          {group.slot && <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">{group.slot}</span>}
-                          {linkLabel && <span className={`text-[9px] font-black rounded px-1.5 py-0.5 ${hasLinks ? 'text-blue-400/70 bg-blue-400/10' : 'text-slate-500/70 bg-slate-800/50'}`}>{linkLabel}{!hasLinks && actives.length > 1 ? ' unlinked' : ''}</span>}
-                        </div>
-                        {/* Linked group: show gems in order with link line */}
-                        {hasLinks ? (
-                          <div className="flex items-start gap-1.5">
-                            <div className="flex flex-col items-center pt-1" style={{width: '6px'}}>
-                              {group.gems.map((_, i) => (
-                                <div key={i} className="flex flex-col items-center">
-                                  <div className={`w-1.5 h-1.5 rounded-full ${group.gems[i].isSupport ? 'bg-slate-600' : 'bg-blue-500'}`} />
-                                  {i < group.gems.length - 1 && <div className="w-px h-3 bg-blue-500/30" />}
-                                </div>
-                              ))}
-                            </div>
-                            <div className="flex-1 space-y-0.5">
-                              {group.gems.map((gem, si) => (
-                                <div key={si} className="flex items-center justify-between">
-                                  <div className="flex items-center gap-1">
-                                    <span className={`${gem.isSupport ? 'text-[10px]' : 'text-[11px] font-black'} ${isNew(gem.name) ? 'text-green-400' : (colorMap[gem.color] || (gem.isSupport ? 'text-slate-400' : 'text-slate-200'))}`}>
-                                      {isNew(gem.name) && <span className="text-[8px] mr-1">+</span>}
-                                      {gem.isSupport ? gem.name.replace(' Support', '') : gem.name}
-                                    </span>
-                                    <span className="text-[7px] text-slate-500 ml-1">⚑</span>
-                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, gem.level, gem.quality || null); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-purple-400 hover:text-purple-300 font-bold px-1 rounded bg-purple-400/10 hover:bg-purple-400/20" title={`Buy ${gem.name} L${gem.level}${gem.quality ? '/Q' + gem.quality : ''} (as in guide)`}>{gem.level}/{gem.quality || 0}</button>
-                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-emerald-400 hover:text-emerald-300 font-bold px-1 rounded bg-emerald-400/10 hover:bg-emerald-400/20" title={`Buy ${gem.name} level 20`}>L20</button>
-                                    <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20, 20, { corrupted: 'any' }); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-blue-400 hover:text-blue-300 font-bold px-1 rounded bg-blue-400/10 hover:bg-blue-400/20 border border-red-500/50" title={`Buy ${gem.name} level 20 quality 20 (any corrupt)`}>20/20</button>
-                                  </div>
-                                  <span className={`text-[8px] font-bold ${gem.isSupport ? 'text-amber-400/40' : 'text-amber-400/60'}`}>{gem.source}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          /* Unlinked: just list all gems */
-                          actives.map((gem, si) => (
-                            <div key={si} className="flex items-center justify-between">
-                              <div className="flex items-center gap-1">
-                                <span className={`text-[11px] font-black ${isNew(gem.name) ? 'text-green-400' : (colorMap[gem.color] || 'text-slate-200')}`}>
-                                  {isNew(gem.name) && <span className="text-[8px] mr-1">+</span>}
-                                  {gem.name}
-                                </span>
-                                <span className="text-[7px] text-slate-500 ml-1">⚑</span>
-                                <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, gem.level, gem.quality || null); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-purple-400 hover:text-purple-300 font-bold px-1 rounded bg-purple-400/10 hover:bg-purple-400/20" title={`Buy ${gem.name} L${gem.level}${gem.quality ? '/Q' + gem.quality : ''} (as in guide)`}>{gem.level}/{gem.quality || 0}</button>
-                                <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-emerald-400 hover:text-emerald-300 font-bold ml-1 px-1 rounded bg-emerald-400/10 hover:bg-emerald-400/20" title={`Buy ${gem.name} level 20`}>L20</button>
-                                <button onClick={async () => { try { const url = await searchGemTrade(selectedLeague, gem.name, 20, 20, { corrupted: 'any' }); window.open(url, '_blank'); } catch(e) { console.error(e); }}} className="text-[8px] text-blue-400 hover:text-blue-300 font-bold px-1 rounded bg-blue-400/10 hover:bg-blue-400/20 border border-red-500/50" title={`Buy ${gem.name} level 20 quality 20 (any corrupt)`}>20/20</button>
-                              </div>
-                              <span className="text-[8px] text-amber-400/60 font-bold">{gem.source}</span>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    );
-                  })}
-                  {removedGems.length > 0 && (
-                    <div className="border-t border-slate-800/30 pt-3">
-                      <span className="text-[9px] font-bold text-slate-600 uppercase tracking-wider mb-1 block">Removed</span>
-                      {removedGems.map((name, i) => (
-                        <div key={i} className="flex items-center pl-3">
-                          <span className="text-[10px] text-red-400/70 line-through">
-                            <span className="mr-1">-</span>{name.replace(' Support', '')}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>;
-              })()}
-            </div>
+            {Object.keys(groupedItems).length > 0 && (
+              <button onClick={calcAllWeights} disabled={Object.values(calcingWeights).some(Boolean)}
+                className="border border-emerald-800/40 hover:border-emerald-600/50 rounded-lg px-3 py-2 text-[10px] font-black text-emerald-400 hover:text-emerald-300 transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {Object.values(calcingWeights).some(Boolean) ? <><Loader2 className="animate-spin" size={10} /> Calculating</> : <><Activity size={10} /> Weights</>}
+              </button>
+            )}
           </div>
         )}
 
-        {/* League Start Quick Searches */}
-        {Object.keys(groupedItems).length > 0 && (() => {
-          const leagueStartSearches = [
-            { label: '6L Pure Armour', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ar: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: '6L Pure Evasion', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ev: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: '6L Pure ES', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { es: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: '6L AR/EV', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ar: { min: 1 }, ev: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: '6L AR/ES', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ar: { min: 1 }, es: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: '6L EV/ES', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.chest' }, rarity: { option: 'nonunique' } } }, socket_filters: { filters: { links: { min: 6 } } }, armour_filters: { filters: { ev: { min: 1 }, es: { min: 1 } } }, misc_filters: { filters: { corrupted: { option: 'any' } } } }, status: { option: 'securable' } }, sort: { price: 'asc' } } },
-          ];
-          const leagueStartMisc = [
-            { label: 'Res Ring (60+ total)', query: { query: { type: { option: 'ring' }, filters: { type_filters: { filters: { category: { option: 'accessory.ring' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 60 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: 'Res Ring (80+ total)', query: { query: { type: { option: 'ring' }, filters: { type_filters: { filters: { category: { option: 'accessory.ring' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 80 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: 'Life + Res Ring', query: { query: { filters: { type_filters: { filters: { category: { option: 'accessory.ring' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 50 }, disabled: false }, { id: 'pseudo.pseudo_total_life', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: '30% MS Boots + Res', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.boots' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_increased_movement_speed', value: { min: 30 }, disabled: false }, { id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: '30% MS + Life Boots', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.boots' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_increased_movement_speed', value: { min: 30 }, disabled: false }, { id: 'pseudo.pseudo_total_life', value: { min: 50 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: 'Life + Res Helmet', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.helmet' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_life', value: { min: 50 }, disabled: false }, { id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: 'Life + Res Gloves', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.gloves' }, rarity: { option: 'nonunique' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_life', value: { min: 50 }, disabled: false }, { id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
-            { label: 'Life + Res Belt', query: { query: { filters: { type_filters: { filters: { category: { option: 'armour.belt' } } } }, stats: [{ type: 'and', filters: [{ id: 'pseudo.pseudo_total_life', value: { min: 50 }, disabled: false }, { id: 'pseudo.pseudo_total_elemental_resistance', value: { min: 40 }, disabled: false }] }], status: { option: 'securable' } }, sort: { price: 'asc' } } },
-          ];
-          const handleLeagueSearch = async (query) => {
-            try {
-              const searchId = await createTradeSearch(selectedLeague, query);
-              const url = getTradeResultUrl(selectedLeague, searchId);
-              window.open(url, '_blank');
-            } catch (err) {
-              console.error('League start search failed:', err);
-            }
-          };
-          return (
-            <div className="bg-[#12141c] border border-slate-800 rounded-2xl overflow-hidden shadow-lg mb-6">
-              <div
-                className="px-5 py-3 flex items-center justify-between cursor-pointer hover:bg-[#161828] transition-colors"
-                onClick={() => setLeagueStartOpen(p => !p)}
-              >
-                <span className="text-xs font-black text-white uppercase tracking-widest">League Start</span>
-                {leagueStartOpen ? <ChevronUp size={18} className="text-slate-500" /> : <ChevronDown size={18} className="text-slate-500" />}
-              </div>
-              {leagueStartOpen && (
-              <div className="px-5 py-4 space-y-4 border-t border-slate-800/50">
-                <div>
-                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-2">6-Link Body Armour</span>
-                  <div className="flex flex-wrap gap-2">
-                    {leagueStartSearches.map((s, i) => (
-                      <button key={i} onClick={() => handleLeagueSearch(s.query)} className="bg-[#1a1c28] hover:bg-[#252840] border border-slate-700 hover:border-blue-600 rounded-lg px-3 py-1.5 text-[10px] font-bold text-slate-300 hover:text-white transition-all">
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest block mb-2">Gear Upgrades</span>
-                  <div className="flex flex-wrap gap-2">
-                    {leagueStartMisc.map((s, i) => (
-                      <button key={i} onClick={() => handleLeagueSearch(s.query)} className="bg-[#1a1c28] hover:bg-[#252840] border border-slate-700 hover:border-blue-600 rounded-lg px-3 py-1.5 text-[10px] font-bold text-slate-300 hover:text-white transition-all">
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              )}
-            </div>
-          );
-        })()}
+        {/* Tab content */}
+        {activeTab === 'gems' && (
+          <GemsTab
+            gemSetups={gemSetups} selectedSetupIdx={selectedSetupIdx}
+            setSelectedSetupIdx={setSelectedSetupIdx} slotGems={slotGems}
+            setSlotGems={setSlotGems} selectedLeague={selectedLeague}
+          />
+        )}
 
-        {activeCategory && (
-          <div className="space-y-6">
-            <div className="space-y-2">
-              <label className="text-[11px] font-black text-slate-500 uppercase tracking-widest ml-1">Item Set</label>
-              <div className="relative">
-                <select
-                  value={activeCategory}
-                  onChange={e => { setActiveCategory(e.target.value); try { localStorage.setItem('pob-trade-itemset', e.target.value); } catch {} }}
-                  className="w-full bg-[#12141c] border-2 border-slate-800 rounded-2xl px-6 py-5 text-sm font-black text-white uppercase italic appearance-none focus:border-blue-600 outline-none shadow-2xl"
-                >
-                  {Object.keys(groupedItems).map(name => <option key={name} value={name}>{name}</option>)}
-                </select>
-                <ChevronDown size={24} className="absolute right-6 top-1/2 -translate-y-1/2 pointer-events-none text-blue-500" />
-              </div>
-            </div>
+        {activeTab === 'stages' && buildClass && (
+          <StagesTab
+            groupedItems={groupedItems} compareItems={compareItems}
+            selectedLeague={selectedLeague} hasSession={hasSession}
+            openTrade={openTrade} searchingItems={searchingItems}
+            itemWeights={itemWeights} setShowSettings={setShowSettings}
+            setError={setError}
+          />
+        )}
 
-            <div className="space-y-4">
-              {categoryConfig.map(({ label, icon }) => {
-                const items = activeSubGroups[label] || [];
-                if (items.length === 0) return null;
-                const isCollapsed = collapsedSubGroups[label];
-                return (
-                  <div key={label} className="bg-[#12141c] border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
-                    <button
-                      onClick={() => setCollapsedSubGroups(p => { const next = { ...p, [label]: !p[label] }; try { localStorage.setItem('pob-trade-tabs', JSON.stringify(next)); } catch {} return next; })}
-                      className="w-full px-6 py-4 flex items-center justify-between hover:bg-[#1a1c24] transition-colors cursor-pointer"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="text-blue-500">{icon}</div>
-                        <span className="text-xs font-black text-white uppercase tracking-widest">{label}</span>
-                        <span className="text-[10px] font-bold text-slate-500 bg-slate-800 px-2 py-0.5 rounded-md">{items.length}</span>
-                      </div>
-                      {isCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
-                    </button>
-                    {!isCollapsed && (
-                      <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-slate-800/50 bg-[#0d0e12]">
-                        {items.map((item, idx) => {
-                          const itemId = `${activeCategory}:${label}-${idx}`;
-                          const isSearching = searchingItems[itemId];
-                          return (
-                            <div key={idx} className={`bg-[#1a1c24] border rounded-2xl p-5 flex flex-col justify-between hover:border-blue-500/30 transition-all shadow-md ${item.searingExarchItem ? 'border-orange-700/60' : item.eaterOfWorldsItem ? 'border-blue-700/60' : item.fractured ? 'border-teal-700/60' : item.synthesised ? 'border-purple-700/60' : 'border-slate-800'}`}>
-                              <div>
-                                <div className="flex justify-between items-start mb-3">
-                                  <div className="flex flex-col">
-                                    <div className="flex items-center gap-2 mb-0.5">
-                                      {item.slotName && <span className="text-[8px] font-bold text-slate-500 bg-slate-800/80 px-1.5 py-0.5 rounded">{item.slotName}</span>}
-                                      {item.itemLevel && <span className="text-[8px] font-bold text-slate-600">iLvl {item.itemLevel}</span>}
-                                      {item.fractured && <span className="text-[8px] font-bold text-teal-400 bg-teal-900/30 px-1.5 py-0.5 rounded">Fractured</span>}
-                                      {item.synthesised && <span className="text-[8px] font-bold text-purple-400 bg-purple-900/30 px-1.5 py-0.5 rounded">Synthesised</span>}
-                                      {item.elderItem && <span className="text-[8px] font-bold text-slate-400 bg-slate-700/40 px-1.5 py-0.5 rounded">Elder</span>}
-                                      {item.shaperItem && <span className="text-[8px] font-bold text-slate-400 bg-slate-700/40 px-1.5 py-0.5 rounded">Shaper</span>}
-                                      {item.searingExarchItem && <span className="text-[8px] font-bold text-orange-400 bg-orange-900/30 px-1.5 py-0.5 rounded">Searing Exarch</span>}
-                                      {item.eaterOfWorldsItem && <span className="text-[8px] font-bold text-blue-400 bg-blue-900/30 px-1.5 py-0.5 rounded">Eater of Worlds</span>}
-                                    </div>
-                                    <span className={`text-[9px] font-black uppercase tracking-widest opacity-80 mb-0.5 ${item.rarity === 'Unique' ? 'text-[#af6025]' : 'text-yellow-200'}`}>
-                                      {item.rarity} {item.baseType}
-                                    </span>
-                                    <h3 className={`font-black text-sm leading-tight tracking-tight ${item.rarity === 'Unique' ? 'text-[#af6025]' : 'text-yellow-200'}`}>
-                                      {item.name}
-                                    </h3>
-                                  </div>
-                                  <button
-                                    onClick={() => copyToClipboard(item.raw, itemId)}
-                                    className="p-2 bg-[#0a0b0e] rounded-xl text-slate-600 hover:text-white border border-slate-800 transition-colors cursor-pointer"
-                                  >
-                                    {feedbackId === itemId ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
-                                  </button>
-                                </div>
-                                {item.properties && Object.keys(item.properties).length > 0 && (
-                                  <div className="flex flex-wrap gap-x-3 gap-y-1 mb-2 pb-2 border-b border-slate-800/40">
-                                    {item.properties['Armour'] && <span className="text-[9px] text-slate-400"><span className="text-slate-600">AR </span><span className="text-white font-bold">{item.properties['Armour']}</span></span>}
-                                    {item.properties['Evasion'] && <span className="text-[9px] text-slate-400"><span className="text-slate-600">EV </span><span className="text-white font-bold">{item.properties['Evasion']}</span></span>}
-                                    {item.properties['Energy Shield'] && <span className="text-[9px] text-slate-400"><span className="text-slate-600">ES </span><span className="text-white font-bold">{item.properties['Energy Shield']}</span></span>}
-                                    {item.properties['Physical Damage'] && <span className="text-[9px] text-slate-400"><span className="text-slate-600">pDPS </span><span className="text-white font-bold">{item.properties['Physical Damage']}</span></span>}
-                                    {item.properties['Elemental Damage'] && <span className="text-[9px] text-slate-400"><span className="text-slate-600">eDMG </span><span className="text-white font-bold">{item.properties['Elemental Damage']}</span></span>}
-                                    {item.properties['Critical Strike Chance'] && <span className="text-[9px] text-slate-400"><span className="text-slate-600">Crit </span><span className="text-white font-bold">{item.properties['Critical Strike Chance']}%</span></span>}
-                                    {item.properties['Attacks per Second'] && <span className="text-[9px] text-slate-400"><span className="text-slate-600">APS </span><span className="text-white font-bold">{item.properties['Attacks per Second']}</span></span>}
-                                  </div>
-                                )}
-                                <div className="space-y-1 mb-3 min-h-[60px]">
-                                  {item.stats.slice(0, 8).map((s, i) => {
-                                    const isExcluded = excludedMods[itemId]?.has(i);
-                                    const isCrafted = s.modTag === 'crafted';
-                                    const isEldritch = s.modTag === 'exarch' || s.modTag === 'eater';
-                                    const modColor = isCrafted ? 'text-blue-400' : isEldritch ? 'text-orange-300' : 'text-slate-400';
-                                    return (
-                                      <div key={i} className={`text-[10px] ${modColor} flex items-center gap-1.5 group/mod`}>
-                                        <button
-                                          onClick={() => setExcludedMods(prev => {
-                                            const set = new Set(prev[itemId] || []);
-                                            if (set.has(i)) set.delete(i); else set.add(i);
-                                            return { ...prev, [itemId]: set };
-                                          })}
-                                          className={`w-3.5 h-3.5 rounded-sm border flex items-center justify-center shrink-0 text-[8px] font-black transition-colors cursor-pointer ${isExcluded ? 'border-red-500/60 bg-red-500/10 text-red-400' : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'}`}
-                                          title={isExcluded ? 'Excluded from search' : 'Included in search'}
-                                        >{isExcluded ? '✕' : '✓'}</button>
-                                        <span className={`truncate ${isExcluded ? 'line-through opacity-40' : ''}`}>{s.line}</span>
-                                        {isCrafted && <span className="text-[7px] text-blue-500/60 shrink-0">(crafted)</span>}
-                                        {s.modTag === 'exarch' && <span className="text-[7px] text-orange-400/60 shrink-0">(exarch)</span>}
-                                        {s.modTag === 'eater' && <span className="text-[7px] text-blue-400/60 shrink-0">(eater)</span>}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                                <div className="text-[8px] text-slate-600 cursor-pointer select-none" onClick={() => setDebugItem(debugItem === itemId ? null : itemId)}>
-                                  [debug {item.stats.length} stats, {excludedMods[itemId]?.size || 0} off]
-                                </div>
-                                {debugItem === itemId && (
-                                  <pre className="text-[7px] text-yellow-400/80 bg-black/60 p-1 rounded overflow-auto max-h-40 whitespace-pre-wrap">
-                                    {JSON.stringify({
-                                      itemId,
-                                      totalStats: item.stats.length,
-                                      shownStats: item.stats.slice(0, 8).map((s, i) => ({
-                                        i, line: s.line, modTag: s.modTag, excluded: excludedMods[itemId]?.has(i) || false
-                                      })),
-                                      excludedSet: [...(excludedMods[itemId] || [])],
-                                      rawLines: item.stats.slice(0, 8).map(s => s.rawLine)
-                                    }, null, 1)}
-                                  </pre>
-                                )}
-                              </div>
-                              <button
-                                onClick={() => openTrade(item, itemId)}
-                                disabled={isSearching}
-                                className="w-full bg-[#1c212d] hover:bg-blue-600 border border-slate-700 hover:border-blue-500 py-3 rounded-xl text-[11px] font-black text-slate-200 hover:text-white flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer disabled:opacity-50"
-                              >
-                                {isSearching ? (
-                                  <><Loader2 className="animate-spin" size={14} /> SEARCHING...</>
-                                ) : (
-                                  <>OPEN TRADE <ExternalLink size={14} /></>
-                                )}
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+        {activeTab === 'upgrade' && treeSpecs.length >= 2 && (
+          <UpgradeTab treeSpecs={treeSpecs} pobCode={pobCode} />
+        )}
+
+        {activeTab === 'audit' && buildClass && (
+          <GearAudit
+            groupedItems={groupedItems} compareItems={compareItems}
+            compareResults={compareResults} compareLoading={compareLoading}
+            compareProgress={compareProgress} compareChar={compareChar}
+            setCompareChar={setCompareChar}
+            compareChars={compareChars} runComparison={runComparison}
+            setShowSettings={setShowSettings} setError={setError}
+            hasSession={hasSession} openTrade={openTrade}
+            searchingItems={searchingItems} itemWeights={itemWeights}
+            selectedLeague={selectedLeague}
+          />
+        )}
+
+        {activeTab === 'items' && activeCategory && (
+          <ItemsTab
+            groupedItems={groupedItems} activeCategory={activeCategory}
+            setActiveCategory={setActiveCategory} collapsedSubGroups={collapsedSubGroups}
+            setCollapsedSubGroups={setCollapsedSubGroups} excludedMods={excludedMods}
+            setExcludedMods={setExcludedMods} itemWeights={itemWeights}
+            calcingWeights={calcingWeights} searchingItems={searchingItems}
+            feedbackId={feedbackId} debugItem={debugItem} setDebugItem={setDebugItem}
+            selectedLeague={selectedLeague} hasSession={hasSession}
+            openTrade={openTrade} copyToClipboard={copyToClipboard}
+            calcAllWeights={calcAllWeights} setShowSettings={setShowSettings}
+            setError={setError} leagueStartOpen={leagueStartOpen}
+            setLeagueStartOpen={setLeagueStartOpen}
+          />
         )}
       </div>
     </div>

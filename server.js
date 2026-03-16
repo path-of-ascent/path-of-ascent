@@ -4,6 +4,9 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import pobBridge from './pob-bridge.js';
+import { parseSpecs, parseSkillSets, parseItems, parseBuildInfo } from './pob-xml-parser.js';
+import { computeSpecDiff, calculateUpgradeDeltas } from './upgrade-planner.js';
 puppeteer.use(StealthPlugin());
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -281,6 +284,28 @@ app.post('/api/logout', async (_req, res) => {
   res.json({ ok: true });
 });
 
+// Character window API — proxy to GGG via Chrome session
+app.get('/api/character-window/:endpoint', async (req, res) => {
+  if (!cfPage) return res.status(503).json({ error: 'No active session' });
+  const { accountName, character } = req.query;
+  if (!accountName) return res.status(400).json({ error: 'accountName required' });
+  const endpoint = req.params.endpoint;
+  if (endpoint !== 'get-characters' && !character) {
+    return res.status(400).json({ error: 'character required' });
+  }
+  const params = new URLSearchParams({ accountName, ...(character && { character }) });
+  try {
+    const result = await chromeFetch(
+      `${GGG_BASE}/character-window/${endpoint}?${params}`, 'GET', null
+    );
+    res.status(result.status);
+    if (result.headers?.['content-type']) res.setHeader('Content-Type', result.headers['content-type']);
+    res.send(result.body);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // Legacy config endpoint (for manual POESESSID)
 app.put('/api/config', (req, res) => {
   const cfg = loadConfig();
@@ -329,6 +354,106 @@ app.get('/api/diagnostics/:file', (req, res) => {
 app.post('/api/refresh-cf', async (_req, res) => {
   const restored = await restoreSession();
   res.json({ restored, loggedIn: cfSession.loggedIn });
+});
+
+// PoB weight calculation — returns DPS/EHP impact per mod line
+app.post('/api/weights', async (req, res) => {
+  const { pobCode, slotName, modLines } = req.body || {};
+  if (!pobCode || !slotName || !modLines) {
+    return res.status(400).json({ error: 'missing pobCode, slotName, or modLines' });
+  }
+  try {
+    const result = await pobBridge.getWeights(pobCode, slotName, modLines);
+    res.json(result);
+  } catch (err) {
+    console.error('[PoB weights] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PoB batch compare — all slots in one call
+app.post('/api/compare', async (req, res) => {
+  const { pobCode, slots } = req.body || {};
+  if (!pobCode || !slots) {
+    return res.status(400).json({ error: 'missing pobCode or slots' });
+  }
+  try {
+    const result = await pobBridge.compareSlots(pobCode, slots);
+    res.json(result);
+  } catch (err) {
+    console.error('[PoB compare] error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PoB upgrade plan — compare two specs with per-change DPS/EHP deltas
+// Cache GGG tree data (fetched lazily, ~5MB)
+let cachedTreeData = null;
+async function getTreeData() {
+  if (cachedTreeData) return cachedTreeData;
+  try {
+    const resp = await fetch('https://raw.githubusercontent.com/grindinggear/skilltree-export/master/data.json');
+    if (resp.ok) cachedTreeData = await resp.json();
+  } catch (e) {
+    console.warn('[Upgrade Plan] Failed to fetch tree data:', e.message);
+  }
+  return cachedTreeData;
+}
+
+app.post('/api/upgrade-plan', async (req, res) => {
+  const { pobCode, fromSpecIdx, toSpecIdx } = req.body;
+  if (!pobCode || fromSpecIdx == null || toSpecIdx == null) {
+    return res.status(400).json({ ok: false, error: 'Missing pobCode, fromSpecIdx, or toSpecIdx' });
+  }
+
+  try {
+    // Decode XML
+    const xml = pobBridge.decodePobCode(pobCode);
+
+    // Parse spec data
+    const specs = parseSpecs(xml);
+    const skillSets = parseSkillSets(xml);
+    const itemsMap = parseItems(xml);
+
+    if (fromSpecIdx < 0 || fromSpecIdx >= specs.length || toSpecIdx < 0 || toSpecIdx >= specs.length) {
+      return res.status(400).json({ ok: false, error: `Spec index out of range (0-${specs.length - 1})` });
+    }
+
+    const fromSpec = specs[fromSpecIdx];
+    const toSpec = specs[toSpecIdx];
+    const fromSkills = skillSets[fromSpecIdx] || [];
+    const toSkills = skillSets[toSpecIdx] || [];
+
+    // Compute diff
+    const diff = computeSpecDiff(fromSpec, toSpec, fromSkills, toSkills, itemsMap);
+    diff._fromIdx = fromSpecIdx;
+    diff._toIdx = toSpecIdx;
+
+    // Fetch tree data for node grouping
+    const treeData = await getTreeData();
+
+    // Ensure bridge is running
+    await pobBridge.ensureRunning();
+
+    // Calculate deltas
+    const result = await calculateUpgradeDeltas(
+      pobBridge, xml, diff, fromSpec, toSpec, itemsMap, treeData,
+      (msg) => console.log(`[Upgrade Plan] ${msg}`)
+    );
+
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[Upgrade Plan] error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// PoB status — check if the engine is running
+app.get('/api/pob-status', (_req, res) => {
+  res.json({
+    running: pobBridge.ready,
+    cacheSize: pobBridge.cache?.size || 0,
+  });
 });
 
 // Proxy /api/trade/* and /api/trade2/* to GGG via persistent Chrome
