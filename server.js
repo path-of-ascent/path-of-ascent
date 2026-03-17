@@ -7,6 +7,7 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import pobBridge from './pob-bridge.js';
 import { parseSpecs, parseSkillSets, parseItems, parseBuildInfo } from './pob-xml-parser.js';
 import { computeSpecDiff, calculateUpgradeDeltas } from './upgrade-planner.js';
+import * as timelessDB from './timeless-db.js';
 puppeteer.use(StealthPlugin());
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -514,6 +515,205 @@ self.addEventListener('activate', async () => {
   self.registration.unregister();
 });`
   );
+});
+
+// Proxy GGG sprite sheet images (CORS workaround)
+app.get('/api/sprite/:filename', async (req, res) => {
+  const { filename } = req.params;
+  // Only allow image filenames
+  if (!/^[\w-]+\.(jpg|png|webp)$/i.test(filename)) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+  try {
+    const url = `https://web.poecdn.com/image/passive-skill/${filename}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return res.status(resp.status).end();
+    const contentType = resp.headers.get('content-type') || 'image/png';
+    res.set('Content-Type', contentType);
+    res.set('Cache-Control', 'public, max-age=604800'); // Cache 1 week
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    res.send(buffer);
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// --- Timeless Jewel DB API ---
+try { timelessDB.initDB(); console.log('Timeless DB loaded'); } catch (e) { console.warn('Timeless DB not available:', e.message); }
+
+app.get('/api/timeless/version', (_req, res) => {
+  try { res.json(timelessDB.getVersion()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/timeless/jewel-info', (req, res) => {
+  try { res.json(timelessDB.getJewelInfo(req.query.type ? parseInt(req.query.type) : null)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/timeless/lookup', (req, res) => {
+  const { type, node, seed } = req.query;
+  if (!type || !node || !seed) return res.status(400).json({ error: 'type, node, seed required' });
+  try { res.json(timelessDB.lookup(parseInt(type), parseInt(node), parseInt(seed))); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/timeless/transforms', (req, res) => {
+  const { jewelType, seed, nodeIds } = req.body;
+  if (!jewelType || !seed || !nodeIds) return res.status(400).json({ error: 'jewelType, seed, nodeIds required' });
+  try { res.json(timelessDB.getTransforms(jewelType, seed, nodeIds)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/timeless/search', (req, res) => {
+  const { jewelType, nodeIds, desiredMods, minScore, maxResults, requiredMods } = req.body;
+  if (!jewelType || !nodeIds || !desiredMods) return res.status(400).json({ error: 'jewelType, nodeIds, desiredMods required' });
+  try {
+    res.json(timelessDB.searchSeeds(jewelType, nodeIds, desiredMods, { minScore, maxResults, requiredMods }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/timeless/similar', (req, res) => {
+  const { jewelType, referenceSeed, nodeIds, minMatch, maxResults } = req.body;
+  if (!jewelType || !referenceSeed || !nodeIds) return res.status(400).json({ error: 'jewelType, referenceSeed, nodeIds required' });
+  try {
+    res.json(timelessDB.findSimilarSeeds(jewelType, referenceSeed, nodeIds, { minMatch, maxResults }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/timeless/notable', (req, res) => {
+  if (!req.query.name) return res.status(400).json({ error: 'name required' });
+  try { res.json(timelessDB.getNotableStats(req.query.name)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/timeless/sockets', (_req, res) => {
+  try { res.json(timelessDB.getAllSockets()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/timeless/passives', (_req, res) => {
+  try { res.json(timelessDB.getAllLegionPassives()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/timeless/trade-ids', (req, res) => {
+  try { res.json(timelessDB.getTradeIds(req.query.type ? parseInt(req.query.type) : null)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DPS/EHP-weighted timeless jewel search
+app.post('/api/timeless/search-dps', async (req, res) => {
+  const { pobCode, sockets, dpsWeight = 0.7, ehpWeight = 0.3, preFilterTop = 50, maxResults = 20, desiredMods } = req.body;
+  if (!pobCode || !sockets || !Array.isArray(sockets) || sockets.length === 0) {
+    return res.status(400).json({ error: 'pobCode and sockets[] required' });
+  }
+  try {
+    // Load build
+    await pobBridge.loadBuild(pobCode);
+
+    // Get baseline stats
+    const baselineStats = await pobBridge.getStats([
+      'TotalDPS', 'TotalDotDPS', 'CombinedDPS', 'FullDPS',
+      'TotalEHP', 'Life', 'EnergyShield',
+    ]);
+    const stats = baselineStats.stats || baselineStats;
+    let baseDps = (stats.TotalDPS || 0) + (stats.TotalDotDPS || 0);
+    if (stats.CombinedDPS && stats.CombinedDPS > baseDps) baseDps = stats.CombinedDPS;
+    if (stats.FullDPS && stats.FullDPS > 0) baseDps = stats.FullDPS;
+    const baseEhp = stats.TotalEHP || ((stats.Life || 0) + (stats.EnergyShield || 0));
+
+    const socketResults = [];
+
+    for (const socket of sockets) {
+      const { socketNodeId, jewelType, conquerorIdx, nodeIds } = socket;
+      if (!socketNodeId || !jewelType || !nodeIds) continue;
+
+      const slotName = `Jewel ${socketNodeId}`;
+
+      // Phase 1: Pre-filter via LUT
+      let mods = desiredMods;
+      if (!mods || mods.length === 0) {
+        // Universal pre-filter: get all passives with weight 1
+        const allPassives = timelessDB.getAllLegionPassives();
+        mods = allPassives
+          .filter(p => !p.is_keystone)
+          .slice(0, 20) // Just use first 20 for variety
+          .map(p => ({ legionId: p.id, weight: 1 }));
+      }
+
+      const preFilter = timelessDB.searchSeeds(jewelType, nodeIds, mods, {
+        maxResults: preFilterTop,
+      });
+
+      if (preFilter.results.length === 0) {
+        socketResults.push({ socketNodeId, results: [], error: 'no seeds found in pre-filter' });
+        continue;
+      }
+
+      // Look up keystone name for jewel text generation
+      const socketInfo = timelessDB.getSocketInfo(parseInt(socketNodeId));
+      const keystoneName = socketInfo?.keystone || '';
+
+      // Generate item texts for all candidate seeds
+      const candidateSeeds = preFilter.results.map(r => r.seed);
+      const jewelTexts = candidateSeeds.map(seed =>
+        timelessDB.generateJewelText(jewelType, seed, conquerorIdx, keystoneName)
+      ).filter(Boolean);
+
+      if (jewelTexts.length === 0) {
+        socketResults.push({ socketNodeId, results: [], error: 'failed to generate jewel texts' });
+        continue;
+      }
+
+      // Phase 2: PoB calc engine evaluation
+      const calcResults = await pobBridge.calcTimelessBatch(slotName, jewelTexts);
+
+      // Score and rank
+      const scored = calcResults.map((cr, i) => {
+        if (cr.error) return null;
+        const dpsDelta = cr.dps - baseDps;
+        const ehpDelta = cr.ehp - baseEhp;
+        const dpsPercent = baseDps > 0 ? (dpsDelta / baseDps) * 100 : 0;
+        const ehpPercent = baseEhp > 0 ? (ehpDelta / baseEhp) * 100 : 0;
+        const score = (baseDps > 0 ? (dpsDelta / baseDps) * dpsWeight : 0)
+                    + (baseEhp > 0 ? (ehpDelta / baseEhp) * ehpWeight : 0);
+
+        // Find mod matches from pre-filter results
+        const preFilterResult = preFilter.results[i];
+
+        return {
+          seed: candidateSeeds[i],
+          dps: cr.dps,
+          ehp: cr.ehp,
+          dpsDelta: Math.round(dpsDelta),
+          ehpDelta: Math.round(ehpDelta),
+          dpsPercent: Math.round(dpsPercent * 100) / 100,
+          ehpPercent: Math.round(ehpPercent * 100) / 100,
+          score: Math.round(score * 10000) / 10000,
+          fullDps: cr.fullDps,
+          combinedDps: cr.combinedDps,
+          life: cr.life,
+          es: cr.es,
+          modMatches: preFilterResult?.matches || [],
+        };
+      }).filter(Boolean);
+
+      scored.sort((a, b) => b.score - a.score);
+
+      socketResults.push({
+        socketNodeId,
+        results: scored.slice(0, maxResults),
+      });
+    }
+
+    res.json({
+      baseline: { dps: baseDps, ehp: baseEhp },
+      sockets: socketResults,
+    });
+  } catch (e) {
+    console.error('[timeless/search-dps]', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // Serve static with no-cache for JS/CSS

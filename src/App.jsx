@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { createTradeSearch, getTradeResultUrl, buildTradeQuery, searchGemTrade, fetchWeights, fetchWeightsBatch, fetchSlotWeights, toPobSlotName, parseGggItems } from './tradeApi';
 import { getGemSource } from './gemVendors';
-import PassiveTree, { decodeTreeUrl } from './PassiveTree';
+import PassiveTree, { decodeTreeUrl, fetchTreeData } from './PassiveTree';
 import * as api from './api';
 import {
   CLASS_NAMES, ASCENDANCY_NAMES, getBuildInfo, getMainSkill,
@@ -22,6 +22,7 @@ import ItemsTab from './ItemsTab';
 import StagesTab from './StagesTab';
 import UpgradeTab from './UpgradeTab';
 import GearAudit from './GearAudit';
+import TimelessSearch from './TimelessSearch';
 
 export default function App() {
   // --- All state (unchanged from original) ---
@@ -54,6 +55,7 @@ export default function App() {
   const [gemSetups, setGemSetups] = useState([]);
   const [selectedSetupIdx, setSelectedSetupIdx] = useState(0);
   const [treeSpecs, setTreeSpecs] = useState([]);
+  const [treeData, setTreeData] = useState(null);
   const [slotGems, setSlotGems] = useState({});
   const [showSettings, setShowSettings] = useState(false);
   const [hasSession, setHasSession] = useState(false);
@@ -485,9 +487,23 @@ export default function App() {
             }
           }
         }
-        parsedTreeSpecs.push({ title, nodes: decoded.nodes, masterySelections, jewelSockets });
+        // Parse tattoo overrides from <Overrides> element
+        const tattoos = {};
+        const overridesEl = specEl.getElementsByTagName("Overrides")[0];
+        if (overridesEl) {
+          for (const overrideEl of Array.from(overridesEl.getElementsByTagName("Override"))) {
+            const nodeId = overrideEl.getAttribute("nodeId");
+            const dn = overrideEl.getAttribute("dn") || '';
+            if (!nodeId || !dn) continue;
+            const stats = overrideEl.textContent.trim().split('\n').map(l => l.trim()).filter(Boolean);
+            tattoos[nodeId] = { dn, stats, icon: overrideEl.getAttribute("icon") || '' };
+          }
+        }
+        parsedTreeSpecs.push({ title, nodes: decoded.nodes, masterySelections, jewelSockets, tattoos });
       }
       setTreeSpecs(parsedTreeSpecs);
+      // Load GGG tree data for TimelessSearch (reuses PassiveTree cache)
+      fetchTreeData().then(d => setTreeData(d)).catch(() => {});
 
       // Inject tree-socketed jewels from the ACTIVE spec (not the last one)
       const treeEl = xmlDoc.getElementsByTagName("Tree")[0];
@@ -561,12 +577,20 @@ export default function App() {
   }
 
   // --- Render (tabbed layout) ---
+  // Check if build has any timeless jewels
+  const hasTimelessJewels = treeSpecs.some(spec =>
+    Object.values(spec.jewelSockets || {}).some(item =>
+      (item.raw || '').includes('Timeless Jewel') || (item.baseType || '').includes('Timeless')
+    )
+  );
+
   const tabs = [
     { id: 'items', label: 'Items' },
     { id: 'gems', label: 'Gems' },
     { id: 'stages', label: 'Stages' },
     { id: 'upgrade', label: 'Upgrade' },
     { id: 'audit', label: 'My Gear' },
+    ...(hasTimelessJewels ? [{ id: 'timeless', label: 'Timeless' }] : []),
   ];
 
   return (
@@ -705,6 +729,15 @@ export default function App() {
             hasSession={hasSession} openTrade={openTrade}
             searchingItems={searchingItems} itemWeights={itemWeights}
             selectedLeague={selectedLeague}
+          />
+        )}
+
+        {activeTab === 'timeless' && (
+          <TimelessSearch
+            specs={treeSpecs}
+            treeData={treeData}
+            selectedLeague={selectedLeague}
+            pobCode={pobCode}
           />
         )}
 

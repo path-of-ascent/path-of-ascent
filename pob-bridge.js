@@ -315,6 +315,19 @@ class PoBBridge {
     await this.ensureRunning();
     return this.send('export_build_xml', {});
   }
+
+  /**
+   * Batch evaluate timeless jewel candidates in a slot.
+   * slotName: "Jewel 26725"
+   * jewelTexts: array of PoB item text strings
+   * Returns array of { dps, ehp, fullDps, combinedDps, totalEhp, life, es }
+   */
+  async calcTimelessBatch(slotName, jewelTexts) {
+    await this.ensureRunning();
+    const res = await this.send('calc_timeless_batch', { slotName, jewelTexts });
+    if (!res.ok) throw new Error(res.error || 'calc_timeless_batch failed');
+    return res.results;
+  }
 }
 
 // Singleton
