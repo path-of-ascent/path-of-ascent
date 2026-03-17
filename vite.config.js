@@ -27,12 +27,11 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     proxy: {
-      '/api/trade': {
-        target: 'https://www.pathofexile.com',
+      // ALL /api calls go through Express server (has rate limiting + session management)
+      // No direct-to-GGG proxy — prevents uncontrolled request floods
+      '/api': {
+        target: 'http://localhost:3333',
         changeOrigin: true,
-        headers: {
-          'User-Agent': 'PoB-Trade-PWA/1.0'
-        }
       }
     }
   }

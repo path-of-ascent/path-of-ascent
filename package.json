@@ -20,10 +20,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "better-sqlite3": "^12.8.0",
     "express": "^5.2.1",
     "http-proxy-middleware": "^3.0.5",
     "lucide-react": "^0.577.0",
     "pako": "^2.1.0",
+    "pixi-viewport": "^5.0.3",
+    "pixi.js": "^7.4.3",
     "puppeteer-core": "^24.38.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",

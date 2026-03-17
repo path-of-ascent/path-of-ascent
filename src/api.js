@@ -54,3 +54,15 @@ export async function tradeFetch(path, options = {}) {
   // Browser: proxy through Express
   return fetch(path, options);
 }
+
+export async function fetchCharacters(accountName) {
+  const res = await fetch(`/api/character-window/get-characters?accountName=${encodeURIComponent(accountName)}`);
+  if (!res.ok) throw new Error(`Characters API ${res.status}`);
+  return JSON.parse(await res.text());
+}
+
+export async function fetchCharacterItems(accountName, character) {
+  const res = await fetch(`/api/character-window/get-items?accountName=${encodeURIComponent(accountName)}&character=${encodeURIComponent(character)}`);
+  if (!res.ok) throw new Error(`Items API ${res.status}`);
+  return JSON.parse(await res.text());
+}
