@@ -187,8 +187,74 @@ class PoBBridge {
     const xml = this.decodePobCode(pobCode);
     const res = await this.send('load_build_xml', { xml, name: 'Trade Weight Calc' });
     if (!res.ok) throw new Error(res.error || 'load_build_xml failed');
+
+    // Restore the active spec's tree (headless defaults to spec 1, not activeSpec)
+    await this._restoreActiveSpec(xml);
+
     this.loadedBuildHash = buildHash;
     return res;
+  }
+
+  /**
+   * Parse the active spec from build XML and set the correct tree allocations.
+   * PoB headless loads spec 1 by default, but the build may have activeSpec=9.
+   */
+  async _restoreActiveSpec(xml) {
+    // Find activeSpec number
+    const activeSpecMatch = xml.match(/<Tree[^>]*activeSpec="(\d+)"/);
+    const activeSpec = parseInt(activeSpecMatch?.[1] || '1');
+
+    // Find the Build element's className to get classId
+    const classMatch = xml.match(/<Build[^>]*className="(\w+)"/);
+    const classNames = ['Scion','Marauder','Ranger','Witch','Duelist','Templar','Shadow'];
+    const classId = classNames.indexOf(classMatch?.[1] || '') || 0;
+
+    // Extract all Spec elements and pick the active one
+    const specRegex = /<Spec\s[^>]*>/g;
+    const specs = [];
+    let m;
+    while ((m = specRegex.exec(xml)) !== null) specs.push(m[0]);
+
+    const activeSpecEl = specs[activeSpec - 1];
+    if (!activeSpecEl) return;
+
+    // Parse nodes
+    const nodesMatch = activeSpecEl.match(/nodes="([^"]*)"/);
+    if (!nodesMatch) return;
+    const nodes = nodesMatch[1].split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n));
+
+    // Parse ascendClassId
+    const ascMatch = activeSpecEl.match(/ascendClassId="(\d+)"/);
+    const ascendClassId = parseInt(ascMatch?.[1] || '0');
+
+    // Parse mastery effects from the Spec block (need to find the full block)
+    const masteryEffects = {};
+    const specBlockStart = xml.indexOf(activeSpecEl);
+    if (specBlockStart >= 0) {
+      const specBlock = xml.substring(specBlockStart, xml.indexOf('</Spec>', specBlockStart) + 7);
+      const masteryRegex = /masteryEffects="([^"]*)"/;
+      const masteryMatch = specBlock.match(masteryRegex);
+      if (masteryMatch) {
+        for (const pair of masteryMatch[1].matchAll(/\{(\d+),(\d+)\}/g)) {
+          masteryEffects[pair[1]] = parseInt(pair[2]);
+        }
+      }
+    }
+
+    // Set the tree
+    if (nodes.length > 0) {
+      await this.send('set_tree', {
+        nodes,
+        classId,
+        ascendClassId,
+        masteryEffects,
+        treeVersion: '3_28',
+      });
+      // Run extra frames to recalculate
+      for (let i = 0; i < 5; i++) {
+        await this.send('ping', {});
+      }
+    }
   }
 
   /**
@@ -258,13 +324,8 @@ class PoBBridge {
   }
 
   // --- Upgrade Planner bridge methods ---
-
-  async getStats(fields) {
-    await this.ensureRunning();
-    const res = await this.send('get_stats', { fields });
-    if (!res.ok) throw new Error(res.error || 'get_stats failed');
-    return res;
-  }
+  // Note: getStats is defined above (returns res.stats directly for weight calc).
+  // Upgrade planner calls bridge.send('get_stats', ...) directly.
 
   async setTree(params) {
     await this.ensureRunning();
