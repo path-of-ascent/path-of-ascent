@@ -30,6 +30,7 @@ class PoBBridge {
       const env = {
         ...process.env,
         POB_API_STDIO: '1',
+        POB_SCRIPT_DIR: POB_DIR + '/src',
       };
 
       this.proc = spawn(LUAJIT, ['HeadlessWrapper.lua', '--stdio'], {
@@ -185,11 +186,11 @@ class PoBBridge {
       return { ok: true, cached: true };
     }
     const xml = this.decodePobCode(pobCode);
-    const res = await this.send('load_build_xml', { xml, name: 'Trade Weight Calc' });
+    // Parse activeSpec from XML so the handler can switch to the correct spec
+    const activeSpecMatch = xml.match(/<Tree[^>]*activeSpec="(\d+)"/);
+    const activeSpec = parseInt(activeSpecMatch?.[1] || '1');
+    const res = await this.send('load_build_xml', { xml, name: 'Trade Weight Calc', activeSpec });
     if (!res.ok) throw new Error(res.error || 'load_build_xml failed');
-
-    // Restore the active spec's tree (headless defaults to spec 1, not activeSpec)
-    await this._restoreActiveSpec(xml);
 
     this.loadedBuildHash = buildHash;
     return res;
